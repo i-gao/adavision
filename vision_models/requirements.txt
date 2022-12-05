@@ -1,0 +1,7 @@
+torchvision==0.13.0
+timm
+mmdet
+boto3
+google-cloud-vision
+clip-anytorch
+azure-cognitiveservices-vision-computervision

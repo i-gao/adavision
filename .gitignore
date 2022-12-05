@@ -16,12 +16,8 @@ local_data
 /notebooks/PPT
 /build
 /dist
-/test_trainer/runs
-/adatest/utils/local
 /tests/local
 /tmp
-vision_models/*
 *.pth
 test_trees/
 *.zip
-google-images/
