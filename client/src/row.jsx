@@ -3,7 +3,6 @@ import autoBind from 'auto-bind';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faPlus, faCheck, faBan, faFolderMinus, faArrowRight, faTimes, faFolderPlus, faFolder} from '@fortawesome/free-solid-svg-icons'
 import { defer } from 'lodash';
-import { changeInput, changeLabel, changeOutput, deleteTest, moveTest } from './CommEvent';
 import ContentEditable from './content-editable';
 import ContextMenu from './context-menu';
 
@@ -47,21 +46,15 @@ export default class Row extends React.Component {
     }
     // console.log("state.topic_name", state.topic_name)
     // we automatically start editing topics that are selected and have an imputed name
-    if (state.topic_name && (state.topic_name.startsWith("New topic") || state.value1 === "New test") && this.props.soleSelected) {
-      state["editing"] = true;
-      console.log("setting editing state to true!")
-    }
+    // if (state.topic_name && (state.topic_name.startsWith("New topic") || state.value1 === "New test") && this.props.soleSelected) {
+    //   state["editing"] = true;
+    //   console.log("setting editing state to true!")
+    // }
     
     this.setState(state);
   }
 
   UNSAFE_componentWillUpdate(nextProps, nextState) {
-
-    // if we are becoming to sole selected item then we should scroll to be viewable after rendering
-    if (!this.props.soleSelected && nextProps.soleSelected) {
-      this.scrollToView = true;
-    }
-
     // we need to force a relayout if the type changed since that impacts global alignments
     if (this.state.type !== nextState.type) {
       if (this.props.forceRelayout) this.props.forceRelayout();
@@ -136,36 +129,7 @@ export default class Row extends React.Component {
     } else if (this.props.value2Filter) {
       const re = RegExp(this.props.value2Filter); // TODO: rename value2Filter to reflect it's global nature
       if (!re.test(this.state.topic_name)) return null;
-    }
-    // console.log("real render Row2");
-
-
-    // extract the raw model outputs as strings for tooltips
-    // let model_output_strings = {};
-    // for (const val of ["value1", "value2", "value3"]) {
-    //   model_output_strings[val] = [];
-    //   const val_outputs = this.state[val+"_outputs"] || [];
-    //   for (const k in val_outputs) {
-    //     if (val_outputs[k] && val_outputs[k].length == 1) {
-    //       const d = val_outputs[k][0][1];
-    //       let str = k.slice(0, -6) + " outputs for " + val + ": \n";
-    //       for (const name in d) {
-    //         if (name === "string") {
-    //           str += d[name] + "\n";
-    //         } else {
-    //           if (typeof d[name] === 'string') {
-    //             str += name + ": " + "|".join(d[name].split("|").map(x => "" + parseFloat(x).toFixed(3)));
-    //           } else {
-    //             str += name + ": " + d[name].toFixed(3) + "\n";
-    //           }
-    //         }
-    //       }
-    //       model_output_strings[val].push(str);
-    //     }
-    //   }
-    //   model_output_strings[val] = model_output_strings[val].join("\n");
-    // }
-    
+    }    
 
     let outerClasses = "adatest-row-child";
     if (this.props.selected) outerClasses += " adatest-row-selected";
@@ -199,26 +163,13 @@ export default class Row extends React.Component {
       }
     }
 
-    // console.log("overall_score", overall_score);
-
-    // var hack_score = overall_score[this.props.scoreColumns[0]];
-    // var hack_output_flip = {
-    //   "todo": "not todo",
-    //   "not todo": "todo"
-    // }
-    // console.log("asdfa", main_score, this.state["value1_outputs"]);
-    // if (this.state["value1_outputs"]) {
-    //   var tmp = this.state["value1_outputs"][main_score][0][1];
-    //   console.log("heresss65", this.state["value1_outputs"], Object.keys(tmp));
-    //   var hack_output_name = Object.keys(tmp).reduce((a, b) => tmp[a] > tmp[b] ? a : b);
-    // }
     var label_opacity = this.state.labeler === "imputed" ? 0.5 : 1;
 
     // get the display parts for the template instantiation with the highest score
     const display_parts = this.state.display_parts ? this.state.display_parts[this.state.max_score_ind] : {};
 
     // console.log("overall_score[main_score]", overall_score[main_score], this.props.score_filter)
-    if (this.props.scoreFilter && overall_score[main_score] < this.props.scoreFilter && this.props.scoreFiler > -1000) {
+    if (this.props.scoreFilter && overall_score[main_score] < this.props.scoreFilter && this.props.scoreFilter > -1000) {
       //console.log("score filter ", this.state.value1, score, this.props.scoreFilter)
       return null;
     }
@@ -246,25 +197,16 @@ export default class Row extends React.Component {
           <FontAwesomeIcon icon={faFolderPlus} style={{fontSize: "14px", color: "#000000", display: "inline-block"}} title="Add to current topic" />
         </div>
       }
-      {/* {this.state.topic_name === null &&
-        <svg height="20" width="50" style={{marginTop: "5px", flex: "0 0 50px", display: "inline-block", marginLeft: "8px"}}>
-          <FontAwesomeIcon icon={faTimes} height="15px" y="3px" x="15px" style={{color: "rgb(0, 0, 0)", cursor: "pointer"}} textAnchor="middle" />
-          <FontAwesomeIcon icon={faCheck} height="15px" y="3px" x="-15px" style={{color: "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
-        </svg>
-      } */}
       
       <div style={{padding: "0px", flex: 1}} onClick={this.clickRow} onDoubleClick={this.onOpen}>  
         {this.state.topic_name !== null ? <React.Fragment>
           <div style={{display: "flex", marginTop: "7px", fontSize: "14px"}}> 
             <div className={this.state.hidden ? "adatest-row-hidden": ""} style={{flex: "1", textAlign: "left"}}>
               <ContentEditable onClick={this.clickTopicName} finishOnReturn={true} ref={el => this.topicNameEditable = el} text={decodeURIComponent(this.state.topic_name)} onInput={this.inputTopicName} onFinish={this.finishTopicName} editable={this.state.editing} />
-              <span style={{color: "#999999"}}>{this.state.description}</span>
+              <span style={{color: "#999999"}}> {this.state.description}</span>
             </div>
           </div>
           <div className="adatest-row" style={{opacity: 0.6, marginTop: "-16px", display: this.state.previewValue1 ? 'flex' : 'none'}}>
-            {/* <div style={{flex: "0 0 140px", textAlign: "left"}}>
-              <span style={{color: "#aaa"}}>{this.state.prefix}</span>
-            </div> */}
             <div className="adatest-row-input">
               <span style={{color: "#aaa", opacity: this.state.hovering ? 1 : 0, transition: "opacity 1s"}}>{this.state.prefix}</span><span style={{color: "#aaa"}}>"</span>{this.state.previewValue1}<span style={{color: "#aaa"}}>"</span>
             </div>
@@ -308,31 +250,7 @@ export default class Row extends React.Component {
           </div>
         )}
       </div>
-      {/* <div className="adatest-row-score-text-box"> 
-        {this.state.topic_name === null && !isNaN(score) && score.toFixed(3).replace(/\.?0*$/, '')}
-      </div> */}
-      {/* {this.state.topic_name === null &&
-        <svg height="30" width="90" style={{marginTop: "0px", flex: "0 0 90px", textAling: "left", display: "inline-block", marginLeft: "8px", marginRight: "0px"}}>
-          {this.state.labeler === "imputed" && this.state.label === "pass" ?
-            <FontAwesomeIcon icon={faCheck} strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.05)"}} stroke={this.state.label === "pass" ? "rgb(26, 127, 55)" : "rgba(0, 0, 0, 0.05)"} height="15px" y="8px" x="-30px" textAnchor="middle" />
-          :
-            <FontAwesomeIcon icon={faCheck} height="17px" y="7px" x="-30px" style={{color: this.state.label === "pass" ? "rgb(26, 127, 55)" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
-          }
-          {this.state.labeler === "imputed" && this.state.label === "fail" ?
-            <FontAwesomeIcon icon={faTimes} strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.05)"}} stroke={this.state.label === "fail" ? "rgb(207, 34, 46)" : "rgba(0, 0, 0, 0.05)"} height="15px" y="8px" x="0px" textAnchor="middle" />
-          :
-            <FontAwesomeIcon icon={faTimes} stroke="" height="17px" y="7px" x="0px" style={{color: this.state.label === "fail" ? "rgb(207, 34, 46,"+label_opacity+")" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
-          }
-          {this.props.isSuggestion ?
-            <FontAwesomeIcon icon={faBan} height="17px" y="7px" x="30px" style={{color: this.state.label === "off_topic" ? "rgb(0, 0, 0)" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
-          :
-            <span style={{width: "31px", display: "inline-block"}}></span>
-          }
-          <line x1="0" y1="15" x2="30" y2="15" style={{stroke: "rgba(0, 0, 0, 0)", strokeWidth: "30", cursor: "pointer"}} onClick={this.labelAsPass}></line>
-          <line x1="30" y1="15" x2="60" y2="15" style={{stroke: "rgba(0, 0, 0, 0)", strokeWidth: "30", cursor: "pointer"}} onClick={this.labelAsFail}></line>
-          <line x1="60" y1="15" x2="90" y2="15" style={{stroke: "rgba(0, 0, 0, 0)", strokeWidth: "30", cursor: "pointer"}} onClick={this.labelAsOffTopic}></line>
-        </svg>
-      } */}
+
       {this.props.scoreColumns && this.props.scoreColumns.map(k => {
 
         let total_pass = 0;
@@ -345,48 +263,39 @@ export default class Row extends React.Component {
         }
 
         let label_opacity = isNaN(overall_score[k]) ? 0.5 : 1;
-
         let scaled_score = scale_score(overall_score[k]);
         
-        // this.totalPasses[k] = Number.isFinite(overall_score[k]) ? this.state.scores[k].reduce((total, value) => total + (value[1] <= 0), 0) : NaN;
-        // this.totalFailures[k] = this.state.scores[k].reduce((total, value) => total + (value[1] > 0), 0);
         return <div key={k} className="adatest-row-score-plot-box">
           {/* {overall_score[k] > 0 ? */}
           <svg height="30" width="150">(total_pass / (total_pass + total_fail))
             {scaled_score < 0 &&
-              <g opacity="0.05">
+              <g opacity="0.1">
                 <line x1="100" y1="15" x2={100 + 50*scale_score(overall_score[k])} y2="15" style={{stroke: "rgb(26, 127, 55, 1.0)", strokeWidth: "25"}}></line>
                 <rect x="50" y="2.5" height="25" width="50" style={{fillOpacity: 0, stroke: "rgb(26, 127, 55, 1)", strokeWidth: "1"}} />
               </g>
             }
             {scaled_score > 0 &&
-              <g opacity="0.05">
+              <g opacity="0.1">
                 <line x1="100" y1="15" x2={100 + 50*scale_score(overall_score[k])} y2="15" style={{stroke: "rgb(207, 34, 46, 1.0)", strokeWidth: "25"}}></line>
                 <rect x="100" y="2.5" height="25" width="50" style={{fillOpacity: 0, stroke: "rgb(207, 34, 46, 1)", strokeWidth: "1"}} />
               </g>
             }
             {this.state.topic_name === null &&
               <React.Fragment>
-                {/* {this.state.label == "pass" &&
-                  <line x1="100" y1="15" x2={100 - (100-bar_width)/2} y2="15" style={{stroke: "rgb(26, 127, 55, 0.05)", strokeWidth: "25"}}></line>
-                }
-                {this.state.label == "fail" &&
-                  <line x1="100" y1="15" x2={100 + bar_width/2} y2="15" style={{stroke: "rgb(207, 34, 46, 0.05)", strokeWidth: "25"}}></line>
-                } */}
                 {this.state.labeler === "imputed" && this.state.label === "pass" ?
-                  <FontAwesomeIcon icon={faCheck} height="15px" y="8px" x="0px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.05)"}} stroke={this.state.label === "pass" ? "rgb(26, 127, 55)" : "rgba(0, 0, 0, 0.05)"} textAnchor="middle" />
+                  <FontAwesomeIcon icon={faCheck} height="15px" y="8px" x="0px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.20)"}} stroke={this.state.label === "pass" ? "rgb(26, 127, 55)" : "rgba(0, 0, 0, 0.20)"} textAnchor="middle" />
                 :
-                  <FontAwesomeIcon icon={faCheck} height="17px" y="7px" x="0px" style={{color: this.state.label === "pass" ? "rgb(26, 127, 55,"+label_opacity+")" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
+                  <FontAwesomeIcon icon={faCheck} height="17px" y="7px" x="0px" style={{color: this.state.label === "pass" ? "rgb(26, 127, 55,"+label_opacity+")" : "rgba(0, 0, 0, 0.20)", cursor: "pointer"}} textAnchor="middle" />
                 }
                 {this.state.labeler === "imputed" && this.state.label === "fail" ?
-                  <FontAwesomeIcon icon={faTimes} height="15px" y="8px" x="50px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.05)"}} stroke={this.state.label === "fail" ? "rgb(207, 34, 46,"+label_opacity+")" : "rgba(0, 0, 0, 0.05)"} textAnchor="middle" />
+                  <FontAwesomeIcon icon={faTimes} height="15px" y="8px" x="50px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.20)"}} stroke={this.state.label === "fail" ? "rgb(207, 34, 46,"+label_opacity+")" : "rgba(0, 0, 0, 0.20)"} textAnchor="middle" />
                 :
-                  <FontAwesomeIcon icon={faTimes} height="17px" y="7px" x="50px" style={{color: this.state.label === "fail" ? "rgb(207, 34, 46,"+label_opacity+")" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
+                  <FontAwesomeIcon icon={faTimes} height="17px" y="7px" x="50px" style={{color: this.state.label === "fail" ? "rgb(207, 34, 46,"+label_opacity+")" : "rgba(0, 0, 0, 0.20)", cursor: "pointer"}} textAnchor="middle" />
                 }
                 {this.state.labeler === "imputed" && this.state.label === "off_topic" ?
-                  <FontAwesomeIcon icon={faBan} height="15px" y="8px" x="-50px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.05)"}} stroke="rgb(207, 140, 34, 1.0)" textAnchor="middle" />
+                  <FontAwesomeIcon icon={faBan} height="15px" y="8px" x="-50px" strokeWidth="50px" style={{color: "rgba(0, 0, 0, 0.20)"}} stroke="rgb(207, 140, 34, 1.0)" textAnchor="middle" />
                 :
-                  <FontAwesomeIcon icon={faBan} height="17px" y="7px" x="-50px" style={{color: this.state.label === "off_topic" ? "rgb(207, 140, 34, 1.0)" : "rgba(0, 0, 0, 0.05)", cursor: "pointer"}} textAnchor="middle" />
+                  <FontAwesomeIcon icon={faBan} height="17px" y="7px" x="-50px" style={{color: this.state.label === "off_topic" ? "rgb(207, 140, 34, 1.0)" : "rgba(0, 0, 0, 0.20)", cursor: "pointer"}} textAnchor="middle" />
                 }
                 <line x1="0" y1="15" x2="50" y2="15" style={{stroke: "rgba(0, 0, 0, 0)", strokeWidth: "30", cursor: "pointer"}} onClick={this.labelAsOffTopic}></line>
                 <line x1="50" y1="15" x2="100" y2="15" style={{stroke: "rgba(0, 0, 0, 0)", strokeWidth: "30", cursor: "pointer"}} onClick={this.labelAsPass}></line>
@@ -414,7 +323,6 @@ export default class Row extends React.Component {
     if (row === "Expand into a template") {
       console.log("EXPAND!!", this.props.id, this.state.contextFocus);
       if (this.state.contextFocus === "value1") {
-        // TODO: Still used?
         this.props.comm.send(this.props.id, {"action": "template_expand_value1"});
       }
     }
@@ -433,7 +341,6 @@ export default class Row extends React.Component {
 
   templateExpandValue1() {
     console.log("templateExpandValue1")
-    // TODO: Still used?
     this.props.comm.send(this.props.id, {"action": "template_expand_value1"});
   }
 
@@ -460,33 +367,32 @@ export default class Row extends React.Component {
   }
 
   changeTestType(e) {
-    // Still used?
     this.props.comm.send(this.props.id, {"type": e.target.value});
     this.setState({type: e.target.value});
   }
 
   labelAsFail(e) {
-    this.setLabel("fail");
+    this.props.comm.send(this.props.id, {"label": "fail", "labeler": this.props.user});
+    if (this.props.isSuggestion) {
+      this.props.comm.send(this.props.id, {"topic": this.props.topic});
+    }
+    this.setState({label: "fail"});
   }
 
   labelAsOffTopic(e) {
-    this.props.comm.sendEvent(changeLabel(this.props.id, "off_topic", this.props.user));
+    this.props.comm.send(this.props.id, {"label": "off_topic", "labeler": this.props.user});
     if (this.props.isSuggestion) {
-      this.props.comm.sendEvent(moveTest(this.props.id, this.props.topic));
+      this.props.comm.send(this.props.id, {"topic": this.props.topic});
     }
     this.setState({label: "off_topic"});
   }
 
   labelAsPass(e) {
-    this.setLabel("pass");
-  }
-
-  setLabel(label) {
-    this.props.comm.sendEvent(changeLabel(this.props.id, label, this.props.user));
+    this.props.comm.send(this.props.id, {"label": "pass", "labeler": this.props.user});
     if (this.props.isSuggestion) {
-      this.props.comm.sendEvent(moveTest(this.props.id, this.props.topic));
+      this.props.comm.send(this.props.id, {"topic": this.props.topic});
     }
-    this.setState({label: label});
+    this.setState({label: "pass"});
   }
 
   onScoreOver(e, key) {
@@ -520,47 +426,23 @@ export default class Row extends React.Component {
   }
 
   toggleHideTopic(e) {
-    // Still used?
     e.preventDefault();
     e.stopPropagation();
 
     this.props.comm.send(this.props.id, {"hidden": !this.state.hidden});
   }
 
-  /* addNewTopic(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const newName = this.props.generateTopicName();
-    const newTopic = this.props.topic + "/" + newName;
-    if (this.state.topic_name === null) {
-      this.props.comm.send(this.props.id, {"topic": newTopic });
-    } else {
-      this.props.comm.send(this.props.id, {"topic": newTopic + "/" + this.state.topic_name});
-    }
-    this.props.setSelected(newTopic);
-  } */
-
   onMouseOver(e) {
-    //console.log("onMouseOver")
-    //e.preventDefault();
-    //e.stopPropagation();
     this.setState({hovering: true});
   }
   onMouseOut(e) {
-    //e.preventDefault();
-    //e.stopPropagation();
     this.setState({hovering: false});
   }
 
   onPlusMouseOver(e) {
-    //console.log("onPlusMouseOver")
-    //e.preventDefault();
-    //e.stopPropagation();
     this.setState({plusHovering: true});
   }
   onPlusMouseOut(e) {
-    //e.preventDefault();
-    //e.stopPropagation();
     this.setState({plusHovering: false});
   }
 
@@ -576,30 +458,20 @@ export default class Row extends React.Component {
   inputInput(text) {
     console.log("inputInput", text)
     this.setState({input: text, scores: null});
-    this.props.comm.debouncedSendEvent500(changeInput(this.props.id, text));
+    this.props.comm.debouncedSend500(this.props.id, {input: text});
   }
 
   finishInput(text) {
     console.log("finishInput", text)
     this.setState({editing: false});
-    // if (text.includes("/")) {
-    //   this.setState({input: text, scores: null});
-    //   this.props.comm.send(this.props.id, {input: text});
-    // }
   }
 
   inputOutput(text) {
-    // return;
     console.log("inputOutput", text);
-    // text = text.trim(); // SML: causes the cursor to jump when editing because the text is updated
     this.setState({output: text, scores: null});
-    this.props.comm.debouncedSendEvent500(changeOutput(this.props.id, text));
+    this.props.comm.debouncedSend500(this.props.id, {output: text});
 
-    // if (this.props.value2Edited) {
-    //   this.props.value2Edited(this.props.id, this.state.value2, text);
-    // }
-    // this.setValue2(text);
-  }
+}
 
   inputTopicName(text) {
     text = encodeURIComponent(text.replaceAll("\\", "").replaceAll("\n", ""));
@@ -612,7 +484,7 @@ export default class Row extends React.Component {
     this.setState({topic_name: text, editing: false});
     let topic = this.props.topic;
     if (this.props.isSuggestion) topic += "/__suggestions__";
-    this.props.comm.sendEvent(moveTest(this.props.id, topic + "/" + text));
+    this.props.comm.send(this.props.id, {topic: topic + "/" + text});
   }
   
   clickRow(e) {
@@ -730,9 +602,9 @@ export default class Row extends React.Component {
       this.setState({dropHighlighted: 0});
       if (this.props.onDrop && id !== this.props.id) {
         if (topic_name !== null && topic_name !== "null") {
-          this.props.onDrop(id, this.props.topic + "/" + this.state.topic_name + "/" + topic_name);
+          this.props.onDrop(id, {topic: this.props.topic + "/" + this.state.topic_name + "/" + topic_name});
         } else {
-          this.props.onDrop(id, this.props.topic + "/" + this.state.topic_name);
+          this.props.onDrop(id, {topic: this.props.topic + "/" + this.state.topic_name});
         }
       }
     }
@@ -743,9 +615,9 @@ export default class Row extends React.Component {
     e.stopPropagation();
     console.log("addToCurrentTopic X", this.props.topic, this.state.topic_name);
     if (this.state.topic_name !== null) {
-      this.props.comm.sendEvent(moveTest(this.props.id, this.props.topic + "/" + this.state.topic_name));
+      this.props.comm.send(this.props.id, {topic: this.props.topic + "/" + this.state.topic_name});
     } else {
-      this.props.comm.sendEvent(moveTest(this.props.id, this.props.topic));
+      this.props.comm.send(this.props.id, {topic: this.props.topic});
     }
   }
 }

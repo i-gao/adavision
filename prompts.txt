@@ -1,0 +1,12 @@
+List some unexpected places to see a {}:\n1)|[]
+List some places to find a {}:\n1)|[]
+List some other things that you usually find with a {}:\n1)|[] and {}
+List some other things that you usually find with a {}:\n1)|[] without a {}
+List some artistic representations of a {}:\n1)|[]
+List some things that can be made to look like a {}:\n1)|[]
+List some types of {} you wouldn't normally see:\n1)|[]
+List some dramatic conditions to photograph a {}:\n1) {} from the back\n2)|[]
+List some conditions a {} could be in that would make it hard to see:\n1) {} in poor lighting\n2)|[]
+List some things that are the same shape as a {}:\n1)|[]
+List some {} that are a different shape than you would expect:\n1)|[]
+List some {} that are a different color than you would expect:\n1)|[]

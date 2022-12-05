@@ -310,8 +310,12 @@ def serve(test_tree_browsers, host="localhost", port=8080, static_dir=None, auth
             web.get('/favicon.ico', static_handler)
         ])
 
+        # save static_dir to python obj s.t. python code knows where to write objects that will be served from _static
+        test_tree_browsers._static_dir = static_dir
         if static_dir is not None:
+            os.makedirs(static_dir, exist_ok=True)
             app.add_routes([web.static('/_static', static_dir)])
+
         if hasattr(test_tree_browsers, "_repr_html_"):
             app.add_routes([
                 web.get('/{topic_path:.*}', topic_handler),

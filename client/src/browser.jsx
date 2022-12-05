@@ -3,7 +3,6 @@ import autoBind from 'auto-bind';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faPlus, faFolderPlus, faCheck, faTimes, faChevronDown, faRedo, faFilter } from '@fortawesome/free-solid-svg-icons'
 import { defer, debounce, clone, get } from 'lodash';
-import { finishTopicDescription, generateSuggestions, redraw, clearSuggestions, setFirstModel, changeGenerator, changeMode, addTopic, addTest, changeFilter, changeTopic, moveTest, deleteTest } from './CommEvent';
 import JupyterComm from './jupyter-comm'
 import WebSocketComm from './web-socket-comm'
 import Row from './row';
@@ -24,11 +23,11 @@ export default class Browser extends React.Component {
       selections: {},
       user: "anonymous",
       loading_suggestions: false,
-      max_suggestions: 10,
+      max_suggestions: 50,
       suggestions_pos: 0,
       suggestionsDropHighlighted: 0,
       score_filter: 0.3,
-      do_score_filter: true,
+      do_score_filter: false,
       filter_text: "",
       experiment_pos: 0,
       timerExpired: false,
@@ -60,7 +59,6 @@ export default class Browser extends React.Component {
   }
 
   debouncedForceUpdate() {
-    // console.log("debouncedForceUpdate");
     this.forceUpdate();
   }
 
@@ -76,7 +74,7 @@ export default class Browser extends React.Component {
     }
     this.props.history.listen(this.locationChanged);
 
-    defer(() => this.comm.sendEvent(redraw()));
+    defer(() => this.comm.send(this.id, {action: "redraw"}));
   }
 
   stripPrefix(path) {
@@ -96,7 +94,6 @@ export default class Browser extends React.Component {
   }
   
   componentDidUpdateOrMount(mount) {
-    // console.log("Row componentDidUpdateOrMount", mount, this.state.selections)
     if (Object.keys(this.state.selections).length === 0) {
       // this.divRef.focus();
     }
@@ -105,19 +102,13 @@ export default class Browser extends React.Component {
 
 
   render() {
-    console.log("----- render AdaTest browser -----", )
+    console.log("----- render AdaTest browser -----")
     // compute the width of the largest type selection option (used to size the type column)
     let selectWidths = {};
     for (const i in this.state.test_types) {
       const type = this.state.test_types[i];
-      // console.log("type", type, this.state.test_type_parts[type])
-      // text2 is the part of the test shown in the select, +7 is for spaces on either side
       selectWidths[type] = this.calculateTextWidth(this.state.test_type_parts[type].text2); 
     }
-    // let maxInputLength = Math.max(
-    //   ...this.state.suggestions.map(id => this.comm.data[id] ? this.comm.data[id].input.length : 1),
-    //   ...this.state.tests.map(id => this.comm.data[id] ? this.comm.data[id].input.length : 1)
-    // );
     let maxOutputLength = Math.max(
       ...this.state.suggestions.map(id => this.comm.data[id] && this.comm.data[id].output ? this.comm.data[id].output.length : 1),
       ...this.state.tests.map(id => this.comm.data[id] && this.comm.data[id].output ? this.comm.data[id].output.length : 1)
@@ -133,35 +124,24 @@ export default class Browser extends React.Component {
 
     const inFillin = this.state.topic.startsWith("/Fill-ins");
 
-    // console.log("location.pathname", location.pathname);
-
     let totalPasses = {};
     let totalFailures = {};
     this.totalPassesObjects = {};
     this.totalFailuresObjects = {};
     if (this.state.score_columns) {
       for (const k of this.state.score_columns) {
-        // console.log("k", k)
         totalPasses[k] = <TotalValue activeIds={this.state.tests} ref={(el) => {this.totalPassesObjects[k] = el}} />;
         totalFailures[k] = <TotalValue activeIds={this.state.tests} ref={(el) => {this.totalFailuresObjects[k] = el}} />;
-        // console.log("totalPasses", totalPasses)
       }
     }
     let topicPath = "";
-    // console.log("tests.render4", this.state.tests, stripSlash(this.stripPrefix(this.props.location.pathname)), this.state.topic);
 
     let breadCrumbParts = stripSlash(this.stripPrefix(this.state.topic)).split("/");
-    // let totalPasses = <TotalValue activeIds={this.state.tests} ref={(el) => this.totalPassesObj = el} />;
-    // let totalFailures = <TotalValue activeIds={this.state.tests} ref={(el) => this.totalFailuresObj = el} />;
 
     return (<div onKeyDown={this.keyDownHandler} tabIndex="0" style={{outline: "none"}} ref={(el) => this.divRef = el}>
-      <div title="Add a new test" onClick={this.addNewTest} style={{float: "right", padding: "9px 10px 7px 14px", border: "1px solid rgb(208, 215, 222)", cursor: "pointer", display: "inline-block", borderRadius: "7px", marginTop: "16px", background: "rgb(246, 248, 250)"}}>
-        <div style={{opacity: "0.6", width: "15px", height: "15px", display: "inline-block"}}><FontAwesomeIcon icon={faPlus} style={{fontSize: "13px", color: "#000000", display: "inline-block"}} /></div>
-        {/* <span style={{opacity: "0.6", fontSize: "13px", fontWeight: "bold"}}>&nbsp;New Test</span> */}
-      </div>
       <div title="Add a new topic" onClick={this.addNewTopic} style={{float: "right", marginRight: "10px", padding: "9px 10px 7px 14px", cursor: "pointer", border: "1px solid rgb(208, 215, 222)", display: "inline-block", borderRadius: "7px", marginTop: "16px", background: "rgb(246, 248, 250)"}}>
         <div style={{opacity: "0.6", width: "15px", height: "15px", display: "inline-block"}}><FontAwesomeIcon icon={faFolderPlus} style={{fontSize: "13px", color: "#000000", display: "inline-block"}} /></div>
-        {/* <span style={{opacity: "0.6", fontSize: "13px", fontWeight: "bold"}}>&nbsp;New Topic</span> */}
+        <span style={{opacity: "0.6", fontSize: "13px", fontWeight: "bold"}}>&nbsp;New Topic</span>
       </div>
       <div style={{float: "right", marginRight: "10px", padding: "8px 10px 7px 14px", width: "250px", border: "1px solid rgb(208, 215, 222)", display: "inline-block", borderRadius: "7px", marginTop: "16px", background: "rgb(246, 248, 250)"}}>
         <div style={{opacity: "0.6", width: "15px", height: "15px", display: "inline-block", paddingLeft: "1px", marginRight: "10px"}}><FontAwesomeIcon icon={faFilter} style={{fontSize: "13px", color: "#000000", display: "inline-block"}} /></div>
@@ -173,19 +153,19 @@ export default class Browser extends React.Component {
 
       <div style={{paddingTop: '20px', width: '100%', verticalAlign: 'top', textAlign: "center"}}>
         <div style={{textAlign: "left", marginBottom: "0px", paddingLeft: "5px", paddingRight: "5px", marginTop: "-6px", marginBottom: "-14px"}}>
-          {/* {this.state.score_columns && this.state.score_columns.slice().reverse().map(k => {
-            return <div key={k} style={{float: "right", width: "110px", textAlign: "center"}}>
-              {k != "model score" && <div style={{marginTop: "-20px", marginBottom: "20px", height: "0px", cursor: "pointer"}} onClick={e => this.clickModel(k, e)}>{k.replace(" score", "")}</div>}
-            </div>
-          })} */}
           <span style={{fontSize: "16px"}}>
           {breadCrumbParts.map((name, index) => {
-            //console.log("bread crum", name, index);
-            // name = decodeURIComponent(name);
-            const out = <span key={index} style={{color: index === breadCrumbParts.length - 1 ? "black" : "rgb(9, 105, 218)" }}>
-              {index > 0 && <span style={{color: "black"}}> / </span>}
-              <BreadCrum topic={topicPath} name={name} defaultName={this.state.test_tree_name} onDrop={this.onDrop} onClick={this.setLocation} />
-            </span>
+            const out = (
+              (index === breadCrumbParts.length - 1 && breadCrumbParts.length > 1) ?
+              <span key={index} style={{color: "black"}}>
+                {index > 0 && <span style={{color: "black"}}> / </span>}
+                <ContentEditable text={decodeURIComponent(name)} defaultText="" finishOnReturn={true} editable={!this.state.loading_suggestions} onFinish={this.finishTopicName} />
+              </span> : 
+              <span key={index} style={{color: "rgb(9, 105, 218)"}}>
+                {index > 0 && <span style={{color: "black"}}> / </span>}
+                <BreadCrum topic={topicPath} name={name} defaultName="root" onDrop={this.onDrop} onClick={this.setLocation} />
+              </span> 
+            )
             if (index !== 0) topicPath += "/";
             topicPath += name;
             return index === 0 && this.props.checklistMode ? undefined : out;
@@ -195,27 +175,20 @@ export default class Browser extends React.Component {
           <div></div>
         </div>
         <div style={{textAlign: "left", color: "#999999", paddingLeft: "5px", marginBottom: "-2px", height: "15px"}}>
-          <ContentEditable defaultText="No topic description" text={this.state.topic_description} onFinish={this.finishTopicDescription} />
+          <ContentEditable defaultText="No topic description" text={this.state.topic_description} finishOnReturn={true} editable={!this.state.loading_suggestions} onFinish={this.finishTopicDescription} />
         </div>
         <div clear="all"></div>
 
         {!this.state.read_only && <div className={this.state.suggestionsDropHighlighted ? "adatest-drop-highlighted adatest-suggestions-box" : "adatest-suggestions-box"} style={{paddingTop: "39px"}} onDragOver={this.onSuggestionsDragOver} onDragEnter={this.onSuggestionsDragEnter}
           onDragLeave={this.onSuggestionsDragLeave} onDrop={this.onSuggestionsDrop}>
           <div className="adatest-scroll-wrap" style={{maxHeight: 31*this.state.max_suggestions, overflowY: "auto"}} ref={(el) => this.suggestionsScrollWrapRef = el}>
-            {this.state.suggestions
-                //.slice(this.state.suggestions_pos, this.state.suggestions_pos + this.state.max_suggestions)
-                // .filter(id => {
-                //   //console.log("Math.max(...this.comm.data[id].scores.map(x => x[1]))", Math.max(...this.comm.data[id].scores.map(x => x[1])))
-                //   return this.comm.data[id] && this.comm.data[id].scores && Math.max(...this.comm.data[id].scores.map(x => x[1])) > 0.3
-                // })
-                .map((id, index) => {
+            {this.state.suggestions.map((id, index) => {
               return <React.Fragment key={id}>
                 <Row
                   id={id}
                   ref={(el) => this.rows[id] = el}
                   topic={this.state.topic}
                   isSuggestion={true}
-                  topicFilter={this.state.topicFilter}
                   value1Filter={this.state.value1Filter}
                   comparatorFilter={this.state.comparatorFilter}
                   value2Filter={this.state.value2Filter}
@@ -240,11 +213,6 @@ export default class Browser extends React.Component {
                 />
               </React.Fragment>
             })}
-            {/* {this.state.do_score_filter && this.state.suggestions.length > this.state.max_suggestions &&
-              <div onClick={e => this.removeScoreFilter(e)} className="adatest-row-add-button adatest-hover-opacity" style={{lineHeight: "25px", display: "inline-block",}}>
-                <FontAwesomeIcon icon={faChevronDown} style={{fontSize: "14px", color: "#000000", display: "inline-block"}} />
-              </div>
-            } */}
             <div style={{height: "15px"}}></div>
           </div>
           
@@ -258,23 +226,18 @@ export default class Browser extends React.Component {
             {!this.state.disable_suggestions && 
               <div onClick={this.refreshSuggestions} style={{color: "#555555", cursor: "pointer", display: "inline-block", padding: "2px", paddingLeft: "15px", paddingRight: "15px", marginBottom: "5px", background: "rgba(221, 221, 221, 0)", borderRadius: "7px"}}>
                 <div style={{width: "15px", display: "inline-block"}}><FontAwesomeIcon className={this.state.loading_suggestions ? "fa-spin" : ""} icon={faRedo} style={{fontSize: "13px", color: "#555555", display: "inline-block"}} /></div>
-                <span style={{fontSize: "13px", fontWeight: "bold"}}>&nbsp;&nbsp;Suggest&nbsp;<select dir="ltr" title="Current suggestion mode" className="adatest-plain-select" onClick={e => e.stopPropagation()} value={this.state.mode} onChange={this.changeMode} style={{fontWeight: "bold", color: "#555555", marginTop: "1px"}}>
+                <span style={{fontSize: "13px", fontWeight: "bold"}}>&nbsp;&nbsp;Suggest&nbsp;<select dir="ltr" title="Current suggestion mode" className="adatest-plain-select" onClick={e => e.stopPropagation()} value={this.state.mode + " \u25BE"} onChange={this.changeMode} style={{fontWeight: "bold", color: "#555555", marginTop: "1px", cursor: "pointer"}}>
                   {(this.state.mode_options || []).map((mode_option) => {
-                    return <option key={mode_option}>{mode_option}</option>
+                    return <option key={mode_option}>{mode_option} &#9662;</option>
                   })}
                 </select></span>
                 {this.state.generator_options && this.state.generator_options.length > 1 &&
-                <select dir="rtl" title="Current suggestion engine" className="adatest-plain-select" onClick={e => e.stopPropagation()} value={this.state.active_generator} onChange={this.changeGenerator} style={{position: "absolute", color: "rgb(170, 170, 170)", marginTop: "1px", right: "13px"}}>
+                <select dir="rtl" title="Current suggestion engine" className="adatest-plain-select" onClick={e => e.stopPropagation()} value={this.state.active_generator + " \u25BE"} onChange={this.changeGenerator} style={{position: "absolute", color: "rgb(170, 170, 170)", marginTop: "1px", right: "13px", cursor: "pointer"}}>
                   {this.state.generator_options.map((generator_option) => {
-                    return <option key={generator_option}>{generator_option}</option>
+                    return <option key={generator_option}>{generator_option} &#9662;</option>
                   })}
                 </select>
                 }
-                {/* <select dir="rtl" title="Current suggestion mode" className="adatest-plain-select" onClick={e => e.stopPropagation()} value={this.state.mode} onChange={this.changeMode} style={{position: "absolute", color: "rgb(140, 140, 140)", marginTop: "1px", right: "13px"}}>
-                  {(this.state.mode_options || []).map((mode_option) => {
-                    return <option key={mode_option}>{mode_option}</option>
-                  })}
-                </select> */}
               </div>
             }
             {this.state.suggestions_error && 
@@ -282,11 +245,6 @@ export default class Browser extends React.Component {
                 {this.state.suggestions_error}
               </div>
             }
-            {/* {this.state.loading_suggestions && this.state.tests.length < 5 &&
-              <div style={{cursor: "pointer", color: "#995500", display: "block", fontWeight: "normal", padding: "2px", paddingLeft: "15px", paddingRight: "15px", marginTop: "-5px"}}>
-                Warning: Auto-suggestions may perform poorly with less than five tests in the current topic!
-              </div>
-            } */}
           </div>
         </div>}
 
@@ -313,7 +271,7 @@ export default class Browser extends React.Component {
         
         <div className="adatest-children-frame">
           {this.state.tests.length == 0 && <div style={{textAlign: "center", fontStyle: "italic", padding: "10px", fontSize: "14px", color: "#999999"}}>
-            This topic is empty. Click the plus (+) button to add a test.
+            This topic is empty. Click "Suggest Tests" to add tests.
           </div>}
           {this.state.tests.map((id, index) => {
             return <React.Fragment key={id}>
@@ -368,7 +326,7 @@ export default class Browser extends React.Component {
             <div style={{width: "50px", textAlign: "left", display: "inline-block", marginRight: "8px"}}>
               Label
             </div>
-            {this.state.score_columns.map(k => {
+            {this.state.score_columns.map(k => { //TODO Keep this?
               return  <span key={k} style={{display: "inline-block", textAlign: "center", marginLeft: "8px", width: "100px", cursor: "pointer"}} onClick={e => this.clickModel(k, e)}>
                 {k.replace(" score", "")}
               </span>
@@ -395,24 +353,9 @@ export default class Browser extends React.Component {
     </div>);
   }
 
-  clickComparatorFilter(e) {
-    console.log("clickComparatorFilter", e);
-    // e.preventDefault();
-    // e.stopPropagation();
-    // defer(() => this.comparatorFilterEditable.focus());
-
-    // if (!this.state.comparatorFilterEditing) {
-    //   this.setState({comparatorFilterEditing: true});
-    //   console.log("clickComparatorFilter editing", this.state.comparatorFilterEditing)
-    //   e.preventDefault();
-    //   e.stopPropagation();
-    //   defer(() => this.value1Editable.focus());
-    // }
-  }
-
   clickModel(modelName, e) {
     if (modelName !== this.state.score_columns[0]) {
-      this.sendEvent(setFirstModel(modelName));
+      this.comm.send(this.id, {action: "set_first_model", model: modelName});
     }
   }
 
@@ -478,12 +421,12 @@ export default class Browser extends React.Component {
   }
 
   changeGenerator(e) {
-    this.comm.sendEvent(changeGenerator(e.target.value));
+    this.comm.send(this.id, {"active_generator": e.target.value.replace(/[^\x00-\x7F]/g, "").trim()})
     this.setState({active_generator: e.target.value})
   }
 
   changeMode(e) {
-    this.comm.sendEvent(changeMode(e.target.value));
+    this.comm.send(this.id, {"mode": e.target.value.replace(/[^\x00-\x7F]/g, "").trim()});
     this.setState({mode: e.target.value});
   }
 
@@ -613,7 +556,7 @@ export default class Browser extends React.Component {
             }
           }
         } else {
-          this.comm.sendEvent(deleteTest(keys));
+          this.comm.send(keys, {topic: "_DELETE_"});
         }
 
         // select the next test after the selected one when appropriate
@@ -698,13 +641,15 @@ export default class Browser extends React.Component {
   addNewTopic(e) {
     e.preventDefault();
     e.stopPropagation();
-    this.comm.sendEvent(addTopic())
+
+    this.comm.send(this.id, {action: "add_new_topic"});
   }
 
   addNewTest(e) {
     e.preventDefault();
     e.stopPropagation();
-    this.comm.sendEvent(addTest())
+
+    this.comm.send(this.id, {action: "add_new_test"});
   }
 
   // inputTopicDescription(text) {
@@ -713,15 +658,29 @@ export default class Browser extends React.Component {
 
   finishTopicDescription(text) {
     console.log("finishTopicDescription", text)
-    
     this.setState({topic_description: text});
-    this.comm.sendEvent(finishTopicDescription(this.state.topic_marker_id, text));
+    this.comm.send(this.id, {action: "change_description", topic_marker_id: this.state.topic_marker_id, description: text});
+  }
+
+  finishTopicName(text) {
+    console.log("finishTopicName", text)
+    text = encodeURIComponent(text.replaceAll("/", "")); // there are also backend checks for this, but backend can't check for /
+    let topic = this.state.topic;
+    let parent = topic.split('/').slice(0, -1).join('/');
+    console.log(topic, parent, text);
+    let new_topic = parent + "/" + text;
+    this.comm.send(topic, {topic: new_topic});
+    this.setLocation(new_topic);
+  }
+
+  updateTopicDescription(text) {
+    this.comm.send(this.id, {topic_description: text});
   }
 
   inputFilterText(text) {
     console.log("inputFilterText", text)
     this.setState({filter_text: text});
-    this.comm.sendEvent(changeFilter(text));
+    this.comm.send(this.id, {action: "change_filter", filter_text: text});
   }
 
   // inputSuggestionsTemplate(text) {
@@ -741,25 +700,26 @@ export default class Browser extends React.Component {
   // }
 
 
+
   refreshSuggestions(e) {
     e.preventDefault();
     e.stopPropagation();
-    console.log("refreshSuggestions");
     if (this.state.loading_suggestions) return;
+    console.log("refreshSuggestions");
     for (let k in Object.keys(this.state.selections)) {
       if (this.state.suggestions.includes(k)) {
         delete this.state.selections[k];
       }
     }
     this.setState({suggestions: [], loading_suggestions: true, suggestions_pos: 0, do_score_filter: true});
-    this.comm.sendEvent(generateSuggestions({
-      value2_filter: this.state.value2Filter, value1_filter: this.state.value1Filter,
+    this.comm.send(this.id, {
+      action: "generate_suggestions", value2_filter: this.state.value2Filter, value1_filter: this.state.value1Filter,
       comparator_filter: this.state.comparatorFilter,
       suggestions_template_value1: this.suggestionsTemplateRow && this.suggestionsTemplateRow.state.value1,
       suggestions_template_comparator: this.suggestionsTemplateRow && this.suggestionsTemplateRow.state.comparator,
       suggestions_template_value2: this.suggestionsTemplateRow && this.suggestionsTemplateRow.state.value2,
       checklist_mode: !!this.suggestionsTemplateRow
-    }))
+    });
   }
 
   clearSuggestions(e) {
@@ -767,7 +727,7 @@ export default class Browser extends React.Component {
     e.stopPropagation();
     console.log("clearSuggestions");
     this.setState({suggestions_pos: 0, suggestions: []});
-    this.comm.sendEvent(clearSuggestions());
+    this.comm.send(this.id, {action: "clear_suggestions"});
   }
 
   pageSuggestions(e, direction) {
@@ -883,20 +843,20 @@ export default class Browser extends React.Component {
     if (this.state.suggestions.indexOf(id) !== -1) return; // dropping a suggestion into suggestions should do nothing
     this.setState({suggestionsDropHighlighted: 0});
     if (topic_name !== null && topic_name !== "null") {
-      this.onDrop(id, this.state.topic + "/__suggestions__" + "/" + topic_name);
+      this.onDrop(id, {topic: this.state.topic + "/__suggestions__" + "/" + topic_name});
     } else {
-      this.onDrop(id, this.state.topic + "/__suggestions__");
+      this.onDrop(id, {topic: this.state.topic + "/__suggestions__"});
     }
   }
 
-  onDrop(id, topic) {
-    console.log("onDrop", id, topic)
+  onDrop(id, data) {
+    console.log("onDrop", id, data)
     let ids;
     if (this.state.selections[id]) {
       ids = Object.keys(this.state.selections);
       this.setState({selections: {}});
     } else ids = id;
-    this.comm.sendEvent(moveTest(ids, topic));
+    this.comm.send(ids, data);
   }
 
   goToTopic(topic) {
@@ -904,9 +864,8 @@ export default class Browser extends React.Component {
     if (this.suggestionsTemplateRow) {
       this.suggestionsTemplateRow.setState({value2: null});
     }
-    this.comm.sendEvent(changeTopic(stripSlash(topic).replaceAll(" ", "%20")))
+    this.comm.send(this.id, {action: "change_topic", topic: stripSlash(topic).replaceAll(" ", "%20")});
   }
-
 }
 
 //const red_blue_100 = ["rgb(0.0,138.56128015770724,250.76166088685727,255.0)","rgb(0.0,137.4991163711455,250.4914687565557,255.0)","rgb(0.0,135.89085862817228,250.03922790292606,255.0)","rgb(0.0,134.80461722068503,249.69422979450337,255.0)","rgb(0.0,133.15912944070257,249.12764143629818,255.0)","rgb(0.0,132.04779673175938,248.70683279399356,255.0)","rgb(0.0,130.3634759186023,248.02444138814778,255.0)","rgb(0.0,128.65565323564863,247.27367576741693,255.0)","rgb(0.0,127.50110843874282,246.72753679433836,255.0)","rgb(0.0,125.75168029462561,245.85912208200173,255.0)","rgb(0.0,124.56903652403216,245.23521693285122,255.0)","rgb(0.0,122.77608206265468,244.24829742509777,255.0)","rgb(0.0,120.95599474876376,243.18984596934288,255.0)","rgb(0.0,119.72546791225868,242.44012441018438,255.0)","rgb(0.0,117.8591797836317,241.26416165478395,255.0)","rgb(0.0,116.59613419778282,240.4339311004283,255.0)","rgb(0.0,114.68050681628627,239.1383865197414,255.0)","rgb(0.0,113.3839993210777,238.2294590645131,255.0)","rgb(0.0,111.41634894068424,236.81437229328455,255.0)","rgb(24.588663906345325,109.41632410184977,235.32817682974928,255.0)","rgb(35.44735081278475,108.06183480151708,234.29254074792976,255.0)","rgb(48.051717444228224,106.00540836596966,232.68863110680456,255.0)","rgb(54.58382033054716,104.61144706132748,231.57374376885096,255.0)","rgb(63.262053865061056,102.49432802815242,229.85160463157354,255.0)","rgb(70.76957320138267,100.33771880021955,228.05703474246997,255.0)","rgb(75.30021073284686,98.87675486589102,226.81988465865538,255.0)","rgb(81.62949947778507,96.6540104818813,224.91180462302458,255.0)","rgb(85.51695933372014,95.1445958160281,223.59546445853985,255.0)","rgb(91.05223198159915,92.84880956154888,221.57285170783555,255.0)","rgb(94.50489166579793,91.28823726624896,220.18077895318467,255.0)","rgb(99.4583420952925,88.91232187683374,218.04471819705824,255.0)","rgb(104.12179041241362,86.48354864452708,215.84022539728738,255.0)","rgb(107.08110644040013,84.83182437240492,214.33114916353256,255.0)","rgb(111.35380618049061,82.31139742285828,212.01929775886506,255.0)","rgb(114.06578608562516,80.5910630456271,210.4357328916578,255.0)","rgb(118.00136409704606,77.96485213886614,208.016034988954,255.0)","rgb(121.74766173376136,75.26429120233696,205.5295010169315,255.0)","rgb(124.15338187699085,73.42230736362347,203.83759830570943,255.0)","rgb(127.6354972896637,70.59265795441205,201.2503012002821,255.0)","rgb(129.8659364639127,68.65218238542003,199.48871459726595,255.0)","rgb(133.10804101178616,65.66976521198737,196.80305057967465,255.0)","rgb(136.20117312715468,62.56838858187191,194.0535664536312,255.0)","rgb(138.1973647491704,60.43984691426682,192.1917348903892,255.0)","rgb(141.0812080782349,57.12602871008347,189.34981967460325,255.0)","rgb(142.93497217316724,54.83018307067161,187.42427995933073,255.0)","rgb(145.62183484149273,51.24379487478906,184.4934665197036,255.0)","rgb(147.34120668891256,48.72446502544426,182.50692554291248,255.0)","rgb(149.83882553726863,44.76410333626281,179.49010263854294,255.0)","rgb(152.21629692400205,40.46878966316789,176.41890349035555,255.0)","rgb(153.74537831964477,37.405899634336166,174.3463167526223,255.0)","rgb(156.8946867035305,33.63427487751921,172.10689873421705,255.0)","rgb(159.57052897508228,31.76356558772026,171.1904317530127,255.0)","rgb(163.51569605559672,28.753894553429824,169.77296032725718,255.0)","rgb(167.36700142841255,25.389234485648817,168.29649352383,255.0)","rgb(169.8939277417104,22.949167366394107,167.28653276271265,255.0)","rgb(173.60751889004476,18.751898233902914,165.72304707948427,255.0)","rgb(176.04037452587522,15.53349266017855,164.65367757038166,255.0)","rgb(179.62227517307235,9.586956240670718,163.00736797488793,255.0)","rgb(181.96398047712216,5.039485831605471,161.88104419124014,255.0)","rgb(185.4175817560734,0.0,160.1552802934102,255.0)","rgb(188.7866522134373,0.0,158.37821514882566,255.0)","rgb(190.99545744496794,0.0,157.1712500750526,255.0)","rgb(194.23939479374397,0.0,155.32022934668817,255.0)","rgb(196.3613372562259,0.0,154.06279982720955,255.0)","rgb(199.48227089890267,0.0,152.14184153517203,255.0)","rgb(202.52395205893734,0.0,150.17747004313574,255.0)","rgb(204.51720731357923,0.0,148.84941784048203,255.0)","rgb(207.43415034062437,0.0,146.8195255831636,255.0)","rgb(209.34227187082465,0.0,145.447819126977,255.0)","rgb(212.1382144344341,0.0,143.35790157156467,255.0)","rgb(214.85836244585704,0.0,141.23222265886395,255.0)","rgb(216.63670670950123,0.0,139.79905843731933,255.0)","rgb(219.23301240468484,0.0,137.6179798879229,255.0)","rgb(220.92924595032096,0.0,136.14914842114652,255.0)","rgb(223.4023955123896,0.0,133.91677798534914,255.0)","rgb(225.0139515716111,0.0,132.41381956928373,255.0)","rgb(227.36646430400836,0.0,130.13484833504174,255.0)","rgb(229.64256707387395,0.0,127.82818117110327,255.0)","rgb(231.1250651865189,0.0,126.27823065434256,255.0)","rgb(233.27714151990378,0.0,123.9294477401314,255.0)","rgb(234.676703289514,0.0,122.35230960074493,255.0)","rgb(236.70590614401792,0.0,119.96514396719735,255.0)","rgb(238.66106706741957,0.0,117.55637241505875,255.0)","rgb(239.92865207922344,0.0,115.94046512913654,255.0)","rgb(241.75947067582808,0.0,113.49767303291209,255.0)","rgb(242.94521123855867,0.0,111.86012465750336,255.0)","rgb(244.6516179552062,0.0,109.38587603007474,255.0)","rgb(245.75354715682175,0.0,107.72779565577645,255.0)","rgb(247.33745729848604,0.0,105.22467948947163,255.0)","rgb(248.84659658395643,0.0,102.70475812439781,255.0)","rgb(249.8170331745849,0.0,101.01697337568197,255.0)","rgb(251.20184136638093,0.0,98.47001746051721,255.0)","rgb(252.09049986637743,0.0,96.76466947151692,255.0)","rgb(253.35113135488535,0.0,94.19124565826175,255.0)","rgb(254.475785780405,0.0,91.60224197581371,255.0)","rgb(255.0,0.0,89.86831280400678,255.0)","rgb(255.0,0.0,87.25188871633031,255.0)","rgb(255.0,0.0,85.49944591423251,255.0)","rgb(255.0,0.0,82.8535189165512,255.0)","rgb(255.0,0.0,81.08083606031792,255.0)"]

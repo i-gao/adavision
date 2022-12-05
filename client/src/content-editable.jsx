@@ -122,12 +122,6 @@ export default class ContentEditable extends React.Component {
         if (mount) this.divRef.textContent = this.props.defaultText;
       }
     }
-    if (this.props.text && (this.props.text.startsWith("New topic") || this.props.text === "New test") && this.props.editable) { // hacky but works for now
-      // console.log("HACK!", this.props.text)
-      this.divRef.focus();
-      selectElement(this.divRef);
-      // document.execCommand('selectAll', false, null);
-    }
   }
       
   handleInput(e, finishing) {
@@ -165,8 +159,8 @@ export default class ContentEditable extends React.Component {
     e.stopPropagation();
     if (e.charCode == 13 && this.props.finishOnReturn) {
       e.preventDefault();
-
       this.handleInput(e, true);
+      this.blur()
     }
   }
 

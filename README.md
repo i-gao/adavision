@@ -1,88 +1,167 @@
-# AdaTest
-AdaTest uses language models against themselves to build suites of unit tests. It is an interative (and fun!) process between a user and a language model that results in a tree of unit tests specifically adapted to the model you are testing. Fixing any failed tests with fine-tuning then leads to an iterative debugging process similar to traditional software development. See <a href="https://aclanthology.org/2022.acl-long.230">paper</a> for details.
+# AdaVision
+AdaVision is a human-in-the-loop tool for testing computer vision models! 
+
+Given a natural language description of a group of images to test (*e.g.* red stop signs), AdaVision retrieves relevant images from LAION-5B.
+The user then labels a small amount of data for model correctness (pass/fail), which is used in successive retrieval rounds to hill-climb towards high-error regions.
+AdaVision also uses GPT-3 to suggest new group descriptions for users to explore.
+
+* Retrieved images are called **tests**. AdaVision automatically feeds these through your vision model and displays the model output. Tests can be labeled as *passed*, *failed*, or *off-topic.*
+* Tests are organized inside folders called **topics,** which should represent coherent groups of images. When topics have particularly high failure rates, we call them **bugs.**
+
+After testing a model with AdaVision, users accumulate a collection of topics with tests inside, which is called a **tree.** Finetuning on tests within a tree can help fix bugs, leading to an iterative debugging process similar to traditional software development. See paper for details.
+
 
 <p align="center">
-  <img src="docs/images/main_loops.png" width="400" alt="AdaTest loops" /><br/>
-  <smaller><i>Note, AdaTest is currently a beta release so please share any issues you encounter.</i></smaller>
+  <img src="docs/img/overview.png" width="700" alt="AdaVision overview." /><br/>
 </p>
 
-## Install
+<small>*AdaVision is forked from [AdaTest for NLP](https://github.com/microsoft/adatest).*</small>
+
+## Installation
+
+Clone this repository, and then run
 
 ```
-pip install adatest
+pip install -r requirements.txt
 ```
 
-## Sentiment analysis example
+In addition to providing the testing tool (`adatest/`) and frontend (`client/`), this repository also includes a suite of vision models one can test and wrapper classes to connect them to the testing tool (`vision_models/`). 
+To install dependencies needed for these models / wrapper classes, see `vision_models/README.md`.
 
-AdaTest can test any NLP model you can call with a python function, here we will test a basic open source sentiment analysis model. Since AdaTest relies on a generative language model to help you create tests, you need to specify what generative model it will use, here we use GPT-3 from OpenAI or GPT-Neo locally. Tests are organized into a test tree that follows the DataFrame API and is organized like a file system, here we create a new empty tree, but you can also start with a previous test tree that targets a similar task. The core AdaTest testing loop starts when you call the `.adapt()` method on a test tree passing the model(s) you want to test and the backend generator you want to use. The code for all this is below:
+## Running AdaVision
+An example script to test a ResNet50 is given in `test_resnet.py`.
+
+### Connecting custom models to AdaVision
+To test a model, wrap it in a `Scorer`, and then pass it to the `adapt()` function of an `adatest.TestTree`. For example:
+```python
+# set up a new testing session, and specify which file the tree will be written to
+tests = adatest.TestTree("test_trees/local/my-first-tree.csv")
+
+# load a model and wrap it in a Scorer
+model = vision_models.load.load_torchvision_model("resnet50")
+scorer = adatest.ClassifierScorer(model)
+
+# serve to the browser 
+adatest.serve(tests.adapt(
+    scorer
+))
+```
+
+AdaVision can currently test classification, object detection, and image captioning models. Models of each kind should be wrapped in the appropriate scorer (`ClassifierScorer`, `DetectionScorer`, or `CaptioningScorer`). 
+
+All models should **take in a list of image urls** as input. Depending on the task, the scorers expect models to output certain forms:
+
+* **Classification.** The model should output an $n \times |\mathcal Y|$ matrix giving the probabilities of each class. Models should also have an attribute called **output_names** listing class names. Wrap the model in a `ClassifierScorer` to test. Alternatively, use the `vision_models.model.ClassificationModel` class to wrap your model and conform it to this output format.
 
 ```python
-import transformers
-import adatest
+# load the raw model and a list of classnames
+model_raw = torchvision.models.resnet50()
+with open('path/to/classnames.txt', 'r') as f:
+  list_of_imagenet_classes = f.readlines()
 
-# create a HuggingFace sentiment analysis model
-classifier = transformers.pipeline("sentiment-analysis", return_all_scores=True)
+# wrap in vision_models.model.ClassificationModel
+model = vision_models.model.ClassificationModel(
+  model_raw, 
+  output_names=list_of_imagenet_classes,
+  transform_list=[torchvision.transforms.CenterCrop(224), torchvision.transforms.toTensor()],
+  batch_size=24,
+)
 
-# specify the backend generator used to help you write tests
-generator = adatest.generators.OpenAI('curie', api_key=OPENAI_API_KEY)
+# use by wrapping in scorer 
+scorer = adatest.ClassifierScorer(model, top_k=3) # display the top 3 predictions
+```
+* **Detection.** The model should output three lists: an $n$-list of lists of (xmin, ymin, xmax, ymax) bounding boxes, an $n$-list of lists of labels for each box, and an $n$-list of lists of confidences for each box. Each inner list can have arbitrary length. Models should also have an attribute called **output_names** listing class names. Wrap the model in a `DetectionScorer` to test. Alternatively, use the `vision_models.model.DetectionModel` class to wrap your model and conform it to this output format.
+```python
+# load the raw model and a list of classnames
+model_raw = torchvision.models.detection.fasterrcnn_resnet50_fpn()
+with open('path/to/classnames.txt', 'r') as f:
+  list_of_coco_classes = f.readlines()
 
-# ...or you can use an open source generator
-#neo = transformers.pipeline('text-generation', model="EleutherAI/gpt-neo-125M")
-#generator = adatest.generators.Transformers(neo.model, neo.tokenizer)
+# wrap in vision_models.model.DetectionModel
+model = vision_models.model.DetectionModel(
+  model_raw, 
+  output_names=list_of_coco_classes,
+  transform_list=[torchvision.transforms.Resize((224, 224)), torchvision.transforms.toTensor()],
+  batch_size=24,
+)
 
-# create a new test tree
-tests = adatest.TestTree("hotel_reviews.csv")
-
-# adapt the tests to our model to launch a notebook-based testing interface
-# (wrap with adatest.serve to launch a standalone server)
-tests.adapt(classifier, generator, auto_save=True)
+# use by wrapping in scorer 
+scorer = adatest.DetectionScorer(model)
 ```
 
-<p align="center">
-  <img src="docs/images/blank_test_tree.png" width="600" alt="AdaTest loops" />
-</p>
+* **Captioning.** The model should output two lists: an $n$-list of lists of captions and an $n$-list of lists of confidences for each caption. Each inner list can have arbitrary length; AdaVision can be set to display the top k most confident captions. Wrap the model in a `CaptioningScorer` to test. Alternatively, use the `vision_models.model.CaptioningModel` class to wrap your model and conform it to this output format.
+```python
+# load the raw model
+from vision_models.ofa import OFACaptioner
+model_raw = OFACaptioner()
 
-Once we have launched a test tree browser, we can use the interface to create new topics and tests. Here we create the topic "/Clear positives/Location" to test how well this model classifies clearly positive statements about a hotel's location. We then add a few starting examples of what we want to see in this topic (clearly positive statements about hotel location):
+# wrap in vision_models.model.CaptioningModel
+model = vision_models.model.CaptioningModel(
+  model_raw, 
+  transform_list=[torchvision.transforms.Resize((224, 224)), torchvision.transforms.toTensor()],
+  batch_size=24,
+)
 
-<p align="center">
-  <img src="docs/images/manual_unconfirmed_inputs.png" width="600" alt="AdaTest loops" />
-</p>
+# use by wrapping in scorer 
+scorer = adatest.CaptioningScorer(model)
+```
 
-Each test consists of a model input, a model output, a pass/fail label, and a score for the current target model. The input text should fall within the scope of the current topic, which here means it is a clearly positive statement about hotel locations. The output text is what the target model we are testing generated (or it can be manually specified, in which case it turns light grey to show it does not reflect the current model behavior). The label is a pass/fail indicator that denotes if the model output is correct with respect to the aspect being tested in the current topic, in our case the model was correct for all the inputs we entered. The model score represents if the testing model passes or fails and how confident the model is when producing the current output.
+We provide easy access to a large library of pretrained models (already wrapped in `ClassificationModel`, `DetectionModel`, or `CaptioningModel`) in `vision_models.load`:
+```python
+model = vision_models.load.load_torchvision_model("resnet50") # classification example
+model = vision_models.load.load_mmdet_model('yolox_x_8x8_300e_coco', min_confidence=0.85, batch_size=48) # detection example
+```
 
-Note that in the above figure all the label indicators are hollow, this means that we have not yet labeled these examples, and AdaTest is just guessing that they are correct. They are all correct so can click the checkmarks to confirm and label all these examples. By confirming we teach AdaTest more about what we want this topic to test, so it becomes better at predicting future labels, and hence automating the testing process. Once we label these examples we can then click "Suggestions" and AdaTest will attempt to write new in-topic examples for us, labeling them and sorting then by score so we can see the most likely failures at the top of the list.
+### Generators
+To test a target model (*e.g.* a ResNet), AdaVision uses two other large models to generate image tests and suggest challenging topic strings. These two other models are called **generators.**
 
-<p align="center">
-  <img src="docs/images/first_suggestions.png" width="600" alt="AdaTest loops" />
-</p>
+* By default, tests are retrieved from [LAION-5B](https://laion.ai/blog/laion-5b/) by `adatest.generators.CLIPRetriever`, which is built on top of [the clip-retrieval package](https://github.com/rom1504/clip-retrieval/). 
 
-Starting at the top of the list we can confirm or change the label for each suggestion and so add them to the current topic (like marking "very convientent for walking" -> "POSITIVE" as correct model behavior), while we reject (or just ignore) examples that don't belong in the current topic (like "Second visit" which is not about a hotel's location). After we have added some new suggestions to the current topic (we normally only bother to look at the top few suggestions) we can repeat the process by clicking "Suggestions" again. Repeating the process a few times allows AdaTest to learn from our feedback and hill-climb towards generating better and better suggestions (ones that are more likely to be on-topic and reveal model failures). Doing this for a few rounds reveals lots of bugs in the model related to positive hotel location statements.
+* In our [paper](), we generate topics using GPT-3, prompted with a set of prompt templates (in `prompts.txt`). This generator is called `adatest.generators.PromptedTopicGenerator`.
 
-<p align="center">
-  <img src="docs/images/many_bugs.png" width="600" alt="AdaTest loops" />
-</p>
+Example usage:
+```python
+# test generator: CLIP
+test_generator = adatest.generators.CLIPRetriever(
+  aesthetic_weight=0.3,
+  use_safety_model=True
+)
 
-Once we have testing the location aspect enough we can repeat the process to test a new aspect of model behavior, for example comments about hotel swimming pools or gyms. The space of possible concepts for hotel reviews is large, so to help explore it AdaTest can suggest new topics once we have a few examples:
+# topic generator: GPT
+with open('prompts.txt') as f:
+    prompts = f.readlines()
+    prompts = [t.strip() for t in prompts]
 
-<p align="center">
-  <img src="docs/images/topic_suggestions.png" width="600" alt="AdaTest loops" />
-</p>
+topic_generator = adatest.generators.PromptedTopicGenerator(
+    values=model.output_names, 
+    prompts=prompts, 
+    text_completion_generator=adatest.generators.OpenAI(model="text-davinci-002", temperature=0.8, top_p=1, filter=None)
+)
 
-After we accept some of these new topic suggestions we can open them and fill them out without ever even writing seed examples. AdaTest can suggest new tests inside an empty topic by just using examples other topics and the current topic's name.
+# name the two generators and pass in as a dictionary
+generators = {
+  'tests': test_generator,
+  'topics': topic_generator,
+}
 
-<p align="center">
-  <img src="docs/images/zero_shot.png" width="600" alt="AdaTest loops" />
-</p>
+# pass generator into adatest
+adatest.serve(tests.adapt(
+    scorer, generator=generators
+))
+```
 
-This is just a short example of how to find bugs in a sentiment analysis model, but the same process can be applied to any NLP model (even ones that generate free form text). Test trees can be adapted to new models and shared with others collaboratively (they are just CSV files). Once you have enough bugs you can fine tune your model against a mixture of your test tree and the original training data to fix all the bugs in the test tree while retaining performance on your original training data (we will share a full demo notebook of this soon).
 
+### Testing process
+After running `adatest.serve()`, AdaVision will pull up a web interface (defaults to localhost:8080). 
+
+*Walkthrough to come!*
 
 ## Citation
 
-If you find AdaTest or test trees useful in your work feel free to cite our ACL paper:
-[Adaptive Testing and Debugging of NLP Models](https://aclanthology.org/2022.acl-long.230) (Ribeiro & Lundberg, ACL 2022)
+If you find AdaVision useful, please cite our paper:
+[Adaptive Testing of Computer Vision Models]().
 
-## Contributing
+<!-- ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
@@ -94,7 +173,7 @@ provided by the bot. You will only need to do this once across all repos using o
 
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments. -->
 
 ## Trademarks
 

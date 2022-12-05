@@ -1,1 +1,0 @@
-These sample test trees are provided without any warrenty to their accuracy. Because they can sometimes cover sensitive topics we encourage users to review and alter them as needed. The files do not represent the opinion of Microsoft and may not represent the opinions of any individual author. PRs are welcome!

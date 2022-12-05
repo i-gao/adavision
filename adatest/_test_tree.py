@@ -1,29 +1,16 @@
 import pandas as pd
 import uuid
 import os
-import io
-import time
 import re
+import io
 import numpy as np
 import pandas as pd
 from ._prompt_builder import PromptBuilder
-from ._test_tree_browser import TestTreeBrowser, is_subtopic
-from ._model import Model
+from ._test_tree_browser import TestTreeBrowser
 from ._topic_model import TopicLabelingModel, TopicMembershipModel
+from .embedders import unique
+from .generators import OpenAI
 import adatest
-from pathlib import Path
-
-# class TestTreeIterator():
-#     def __init__(self, test_tree):
-#         self.test_tree = test_tree
-#         self.position = 0
-
-#     def __next__(self):
-#         if self.position >= len(self.test_tree):
-#             raise StopIteration
-#         else:
-#             self.position += 1
-#             return self.test_tree.iloc[self.position - 1]
 
 class TestTree():
     """ A hierarchically organized set of tests represented as a DataFrame.
@@ -34,7 +21,7 @@ class TestTree():
     webserver. A TestTree object also conforms to most of the standard pandas DataFrame API.
     """
 
-    def __init__(self, tests=None, labeling_model=TopicLabelingModel, membership_model=TopicMembershipModel, index=None, compute_embeddings=False, ensure_topic_markers=True, cache_file=None, **kwargs):
+    def __init__(self, tests=None, index=None, labeling_model=TopicLabelingModel, membership_model=TopicMembershipModel, compute_embeddings=False, ensure_topic_markers=True, duplicate_threshold=0.92, disable_topic_model=False, **kwargs):
         """ Create a new test tree.
 
         Parameters
@@ -50,8 +37,8 @@ class TestTree():
         compute_embeddings: boolean
             If True, use the global adatest.embed to build embeddings of tests in the TestTree.
 
-        kwargs : dict
-            Additional keyword arguments are passed to the pandas DataFrame constructor.
+        duplicate_threshold: float in [0, 1]
+            Used for deduplication. If two tests have cosine similarity >= duplicate_threshold, they will be marked as duplicates.
         """
 
         # the canonical ordered list of test tree columns
@@ -59,6 +46,8 @@ class TestTree():
 
         self.labeling_model = labeling_model
         self.membership_model = membership_model
+        self.disable_topic_model = disable_topic_model
+        self.duplicate_threshold = duplicate_threshold
 
         # create a new test tree in memory
         if tests is None:
@@ -79,36 +68,7 @@ class TestTree():
             else:
                 raise Exception(f"The provided tests file is not supported: {tests}")
 
-        elif isinstance(tests, tuple) and len(tests) == 2: # Dataset loader TODO: fix this for topic models
-            # column_names = ['topic', 'type', 'value1', 'value2', 'value3', 'author', 'description', \
-            # 'model value1 outputs', 'model value2 outputs', 'model value3 outputs', 'model score']
-
-            self._tests = pd.DataFrame(columns=column_names)
-            self._tests_location = None
-
-            self._tests['input'] = tests[0]
-            self._tests['output'] = tests[1]
-
-            # Constants
-            self._tests['topic'] = ''
-            self._tests['label'] = ''
-            self._tests['labeler'] = "dataset"
-            self._tests['description'] = ''
-
-        elif isinstance(tests, list) and isinstance(tests[0], str):
-            self._tests = pd.DataFrame(columns=column_names)
-            self._tests['input'] = tests
-            self._tests['output'] = "[no output]"
-            self._tests['topic'] = ''
-            self._tests['label'] = ''
-            self._tests['labeler'] = ''
-            self._tests['description'] = ''
-            self._tests_location = None
-
-            if index is None:
-                index = [uuid.uuid4().hex for _ in range(len(tests))]
-            self._tests.index = index
-
+        # tests is a pandas-like object, e.g. a subset called by the TestTreeLocIndexer
         else:
             if index is None:
                 index = [uuid.uuid4().hex for _ in range(len(tests))]
@@ -116,33 +76,32 @@ class TestTree():
             self._tests.index = index
             self._tests_location = None
 
-        # # ensure auto saving is possible when requested
-        # if auto_save and self._tests_location is None:
-        #     raise Exception("auto_save=True is only supported when loading from a file or IO stream")
-        # self.auto_save = auto_save
-
         # ensure we have required columns
         for c in ["input", "output", "label"]:
             if c not in self._tests.columns:
                 raise Exception("The test tree being loaded must contain a '"+c+"' column!")
 
         # fill in any other missing columns
-        for column in ["topic", "description"]:
+        if "input_display" not in self._tests.columns:
+            self._tests["input_display"] = self._tests["input"]
+        for column in ["topic", "description", "create_time"]:
             if column not in self._tests.columns:
                 self._tests[column] = ["" for _ in range(self._tests.shape[0])]
         if "labeler" not in self._tests.columns:
             self._tests["labeler"] = ["imputed" for _ in range(self._tests.shape[0])]
+        if "label_confidence" not in self._tests.columns:
+            self._tests["label_confidence"] = [1.0 for _ in range(self._tests.shape[0])]
 
         # ensure that all topics have a topic_marker entry
         if ensure_topic_markers:
             self.ensure_topic_markers()
+            
+        # sanitize all topic names
+        self._tests['topic'] = self._tests['topic'].apply(adatest.utils.sanitize_topic_name)
 
         # drop any duplicate index values
         self._tests = self._tests.groupby(level=0).first()
-
-        # fix spaces in topics names that are not URI encoded
-        self._tests['topic'] = self._tests['topic'].apply(lambda x: x.replace(" ", "%20"))
-
+        
         # drop any duplicate rows
         self._tests.drop_duplicates(["topic", "input", "output", "labeler"], inplace=True)
 
@@ -152,17 +111,8 @@ class TestTree():
         if compute_embeddings:
             self._cache_embeddings()
 
-        # replace any invalid topics with the empty string
-        for i, row in self._tests.iterrows():
-            if not isinstance(row.topic, str) or not row.topic.startswith("/"):
-                self._tests.loc[i, "topic"] = ""
-
         self._topic_labeling_models = {}
         self._topic_membership_models = {}
-
-        # # keep track of our original state
-        # if self.auto_save:
-        #     self._last_saved_tests = self._tests.copy()
 
     @property
     def name(self):
@@ -180,6 +130,7 @@ class TestTree():
                         "topic": parent_topic,
                         "labeler": "imputed",
                         "input": "",
+                        "input_display": "",
                         "output": "",
                         "description": ""
                     }
@@ -246,15 +197,14 @@ class TestTree():
                 self._tests = pd.concat([self._tests, pd.DataFrame({k: [test_tree[k]] for k in test_tree}, index=[uuid.uuid4().hex])], axis=axis)
             else:
                 self._tests = pd.concat([self._tests, pd.DataFrame(test_tree)], axis=axis)
-
-        #self.deduplicate()
-        #self.compute_embeddings()
-        return None # TODO: Rethink append logic -- return copy vs. in place update?
+        return None
 
     def __len__(self):
         return self._tests.__len__()
+    
     def __setitem__(self, key, value):
         return self._tests.__setitem__(key, value)
+    
     def to_csv(self, file=None):
         no_suggestions = self._tests.loc[["/__suggestions__" not in topic for topic in self._tests["topic"]]]
         if file is None:
@@ -262,16 +212,57 @@ class TestTree():
         else:
             no_suggestions.to_csv(file)
 
-    def topic(self, topic):
+    def get_children_in_topic(self, topic, include_self=False, include_tests=True, include_topics=True, direct_children_only=False, include_suggestions=False):
         """ Return a subset of the test tree containing only tests that match the given topic.
 
         Parameters
         ----------
         topic : str
             The topic to filter the test tree by.
+
+        include_self : bool
+            Whether to include the row corresponding to the topic itself
+        
+        include_topics : bool
+            Whether to include rows marked as "topic_marker"
+
+        direct_children_only : bool
+            Whether to only return direct children of the topic, i.e., all direct tests and direct subtopics.
+
+        include_suggestions : bool
+            Whether to include suggestions
         """
-        ids = [id for id, test in self._tests.iterrows() if is_subtopic(topic, test.topic)]
-        return self.loc[ids]
+        children = self._tests.apply(
+            lambda row: adatest.utils.is_subtopic(topic, row["topic"]) \
+                and (include_topics or row["label"] != "topic_marker") \
+                and (include_tests or row["label"] == "topic_marker") \
+                and ((not direct_children_only) \
+                        or (topic == row["topic"]) \
+                        or (row["topic"][len(topic)+1:].count("/") == 0 and row["label"] == "topic_marker") \
+                        or (row["topic"][len(topic)+1:].startswith("__suggestions__")) \
+                    ) \
+                and (include_suggestions or '__suggestions__' not in row["topic"]),
+            axis=1
+        )
+        if not include_self:
+            self_ix = self._tests.index[(self._tests["topic"] == topic) & (self._tests["label"] == "topic_marker")]
+            children.loc[self_ix] = False
+        
+        if len(children) == 0: return children 
+        else: return self.loc[children] 
+
+    def get_topics(self):
+        """Return a Series of topic uuids and their names"""
+        return self.get_children_in_topic("", include_tests=False, include_self=True)['topic']
+
+    def get_topic_id(self, topic):
+        """
+        Returns the id of the topic.
+        Returns None if not found.
+        """
+        indices = self._tests.index[(self._tests['topic'] == topic) & (self._tests['label'] == 'topic_marker')]
+        # if for some reason, there are two indices for this topic, return the first one
+        return indices.tolist()[0] if len(indices) > 0 else None
 
     def topic_has_direct_tests(self, target_topic: str)-> bool:
         """Check if a topic has direct tests."""
@@ -279,22 +270,35 @@ class TestTree():
             lambda row: row['topic']==target_topic and row['label'] != 'topic_marker',
             axis=1
         )
-        return hdt_df.any()
+        return len(hdt_df) > 0 and hdt_df.any()
 
     def topic_has_subtopics(self, target_topic: str) -> bool:
         """Check if a topic has subtopics."""
         has_subtopics_df = self._tests.apply(
-            lambda row: row['topic']!=target_topic and is_subtopic(target_topic, row["topic"]),
+            lambda row: row['topic']!=target_topic and adatest.utils.is_subtopic(target_topic, row["topic"]),
             axis=1
         )
-        return has_subtopics_df.any()
+        return len(has_subtopics_df) > 0 and has_subtopics_df.any()
 
-    def adapt(self, scorer=None, generator=adatest.generators.OpenAI(), auto_save=False, user="anonymous", recompute_scores=False, drop_inactive_score_columns=False,
-              max_suggestions=100, suggestion_thread_budget=0.5, prompt_builder=PromptBuilder(), active_generator="default", starting_path="",
-              score_filter=-1e10, topic_model_scale=0): # TODO: remove active_generator and replace with the ability to set the generator?
-        """ Apply this test tree to a scorer/model and browse/edit the tests to adapt them to the target model.
+    def filter_tree(self, filter_fn):
+        """Return a copy of the tree with the filter_fn applied"""
+        matches = self._tests.apply(
+            filter_fn,
+            axis=1
+        )
+        if len(matches) == 0: return matches 
+        else: return self.loc[matches] 
 
-        Applying a test tree to a target model (wrapped by a scorer) creates a TestTreeBrowser object that can be used to
+    def drop_topic(self, topic):
+        """ Remove a topic from the test tree. """
+        self._tests = self._tests.loc[self._tests["topic"] != topic]
+
+    def adapt(self, scorer=None, generator=OpenAI(), auto_save=False, user="anonymous",
+              max_suggestions=20, suggestion_thread_budget=0, prompt_builder=PromptBuilder(), active_generator="default",
+              disable_topic_suggestions=False):
+        """ 
+        Set up a test tree browser to enable testing a model (wrapped in a Scorer) for this test tree.
+        The TestTreeBrowser object that can be used to
         browse the tree and add new tests to adapt it to the target model.
         
         Parameters
@@ -313,12 +317,6 @@ class TestTree():
         user : str
             The user name to author new tests with.
 
-        recompute_scores : bool
-            Whether to recompute the scores of the tests that already have score values in the test tree.
-
-        drop_inactive_score_columns : bool
-            Whether to drop the score columns in the test tree that do not match any of the passed scorers.
-
         max_suggestions : int
             The maximum number of suggestions to generate each time the user asks for test suggestions.
 
@@ -336,9 +334,6 @@ class TestTree():
         active_generator : "default", or a key name if generators is a dictionary
             Which generator from adatest.generators to use when generating new tests. This should always be set to "default" if
             generators is just a single generator and not a dictionary of generators.
-
-        starting_path : str
-            The path to start browsing the test tree from.
         """
 
         # build the test tree browser
@@ -348,15 +343,11 @@ class TestTree():
             generators=generator,
             auto_save=auto_save,
             user=user,
-            recompute_scores=recompute_scores,
-            drop_inactive_score_columns=drop_inactive_score_columns,
             max_suggestions=max_suggestions,
             suggestion_thread_budget=suggestion_thread_budget,
             prompt_builder=prompt_builder,
             active_generator=active_generator,
-            starting_path=starting_path,
-            score_filter=score_filter,
-            topic_model_scale=topic_model_scale
+            disable_topic_suggestions=disable_topic_suggestions,
         )
 
     def __repr__(self):
@@ -365,112 +356,144 @@ class TestTree():
     def _repr_html_(self):
         return self._tests._repr_html_()
 
-    def deduplicate(self):
-        """ Remove duplicate tests from the test tree.
-        
-        Note that we give precendence to the first test in a set of duplicates.
+    def deduplicate_subtopics(self, topic):
+        """ Remove duplicate subtopic suggestions within a topic from the test tree.
+        Only deduplicates by exact match.
+        If two suggestions duplicate each other, we give preference to the first item.
+        Returns the number of subtopic suggestions removed.
         """
+        already_seen, drop_ids = set(), []
+        subtopics = self.get_children_in_topic(topic, include_suggestions=True, include_self=False, include_topics=True, direct_children_only=True)
+        subtopics = subtopics[subtopics['label'].apply(lambda l: l == 'topic_marker').array]
+        if len(subtopics) == 0: return 0
+        suggestion_mask = subtopics['topic'].apply(lambda t: '/__suggestions__' in t).array
 
-        already_seen = {}
-        drop_ids = []
+        # first, deduplicate by string input
+        # go through non-suggestions first
+        for id, test in subtopics.loc[~suggestion_mask].iterrows():
+            already_seen.add(test.topic[len(topic)+1:].strip())
 
-        # catch duplicate tests in the same topic
-        for id, test in self._tests.iterrows():
-            k = test.topic + "|_ADA_JOIN_|" + test.input + "|_ADA_JOIN_|" + test.output
-            if k in already_seen:
-                drop_ids.append(id)
-            else:
-                already_seen[k] = True
+        # go through suggestions next
+        for id, test in subtopics.loc[suggestion_mask].iterrows():
+            name = test.topic[len(topic)+1:].replace('__suggestions__/', '').strip()
+            if name in already_seen: drop_ids.append(id)
+            else: already_seen.add(name)
 
-        # see if any suggestions are duplicates of things already in the their topic
-        # (note we do this as a second loop so we know we have already marked all the
-        # members of the topic in already_seen)
-        for id, test in self._tests.iterrows():
-            if test.topic.endswith("/__suggestions__"):
-                k = test.topic[:-len("/__suggestions__")] + "|_ADA_JOIN_|" + test.input + "|_ADA_JOIN_|" + test.output
-                if k in already_seen:
-                    drop_ids.append(id)
+        # drop the duplicates
+        num_dropped = len(drop_ids)
+        self._tests.drop(drop_ids, axis=0, inplace=True)        
+        print(f"Removed {num_dropped} suggestions in deduplicate_subtopics()")
+        return num_dropped
+
+    def deduplicate_tests(self, topic):
+        """ Remove duplicate test suggestions within a topic from the test tree.
+        Deduplicates by both exact match of URL and image embedding similarity.
+        If two suggestions duplicate each other, we give preference to the first item.
+        Deduplicates against ALL pass/failed tests inside the tree.
+        Returns the number of test suggestions removed.
+        """
+        already_seen, drop_ids = set(), []
+        tests_in_topic = self.get_children_in_topic(topic, include_suggestions=True, include_self=False, include_topics=False, direct_children_only=False)
+        tests_outside_topic = self.get_children_in_topic(
+            "", include_suggestions=False, include_self=False, include_topics=False, direct_children_only=False
+        ).filter_tree(lambda row: row['label'] in ('pass', 'fail')) # leave off_topic images from other folders
+        suggestion_mask = tests_in_topic['topic'].apply(lambda t: '/__suggestions__' in t).array
+
+        # no suggestions, and no tests
+        if len(tests_in_topic) == 0: return 0
+
+        # first, deduplicate by string input
+        # go through non-suggestions first
+        for id, test in tests_in_topic.loc[~suggestion_mask].iterrows():
+            already_seen.add(test.input)
+        for id, test in tests_outside_topic.iterrows():
+            already_seen.add(test.input)
+
+        # go through suggestions next
+        for id, test in tests_in_topic.loc[suggestion_mask].iterrows():
+            if test.input in already_seen: drop_ids.append(id)
+            else: already_seen.add(test.input)
+
+        # drop the duplicates
+        num_dropped = len(drop_ids)
         self._tests.drop(drop_ids, axis=0, inplace=True)
+        tests_in_topic.drop(drop_ids, axis=0, inplace=True)
+        suggestion_mask = tests_in_topic['topic'].apply(lambda t: '/__suggestions__' in t).array
+
+        # more aggressive deduplication by comparing image embeddings
+        non_sugg_embs = adatest.embed(
+            tests_in_topic.loc[~suggestion_mask]['input'].tolist()
+            + tests_outside_topic['input'].tolist()
+        )
+        sugg_embs = adatest.embed(tests_in_topic.loc[suggestion_mask]['input'].tolist())
+        _, ix = unique(non_sugg_embs + sugg_embs, return_index=True, threshold=self.duplicate_threshold)
+        ix = ix[ix > len(non_sugg_embs)] - len(non_sugg_embs)
+        keep_ids = tests_in_topic.loc[suggestion_mask].index[ix]
+        drop_ids = list(set(tests_in_topic.loc[suggestion_mask].index) - set(keep_ids))
+        num_dropped += len(drop_ids)
+        self._tests.drop(drop_ids, axis=0, inplace=True)
+        
+        print(f"Removed {num_dropped} suggestions in deduplicate_tests()")
+        return num_dropped
+
+    def validate_input_displays(self, static_dir):
+        """ 
+        Check all test.input_display fields for validity; replace invalid test.input_displays with test.input
+        """
+        def _validate_input(test):
+            input_display, input = test['input_display'], test['input']
+            if type(input_display) != str or input_display == "": return input
+            if input_display.startswith("__IMAGE=/_static") \
+                and static_dir is not None \
+                and not os.path.exists(input_display.replace("__IMAGE=/_static", static_dir)):
+                    return input
+            return input_display
+        if len(self._tests) == 0: return
+        self._tests['input_display'] = self._tests.apply(_validate_input, axis=1)
 
     def _cache_embeddings(self, ids=None):
-        """ Pre-compute the embeddings for the given test cases.
-
-        This is used so we can batch the computation don't compute them one at a time later.
-        """
-
+        """Cache the embeddings of ids OR all uncached (new) tests/topics."""
         if ids is None:
             ids = self._tests.index
 
         # see what new embeddings we need to compute
-        all_strings = []
+        to_embed = []
         for id in ids:
             test = self._tests.loc[id]
             if test.label == "topic_marker":
-                parts = test.topic.rsplit("/", 1)
-                str = parts[1] if len(parts) == 2 else ""
-                all_strings.append(str)
+                to_embed.append(adatest.utils.pretty_topic_name(test.topic))
             else:
-                for str in [test.input, test.output]:
-                    all_strings.append(str)
+                # since the topic model uses both the input and output strings, we embed both
+                to_embed.extend([test.input, test.output])
+            
+        adatest.embed(to_embed)
 
-        # suggestions topics don't have topic markers so we check for them separately
-        # all_strings.append("__suggestions__")
-        
-        # we don't use the output of the embedding, just do this to get the embeddings cached
-        adatest.embed(all_strings)
-
-    def impute_labels(self):
-        """ Impute missing labels in the test tree. """
-        # TODO: this is just a random mock, it needs to implement real local topic models
-
+    def get_topic_model_labels(self):
+        """Impute missing labels in the test tree:
+        1. Run the topic models for all new suggestions.
+        2. Mark all topic markers as topic_marker
+        """
         ids_to_impute = self._tests.index[self._tests["label"] == ""]
         self._cache_embeddings(ids_to_impute)
         for id in ids_to_impute:
             test = self._tests.loc[id]
-            if test.label == "":
-                if self.topic_membership_model(test.topic)(test.input) == "off_topic":
+            self._tests.loc[id, "labeler"] = "imputed"
+
+            if not self.disable_topic_model:
+                # compute membership
+                membership_pred, membership_conf = self.topic_membership_model(test.topic)(test.input, return_confidence=True)
+                if membership_pred == "off_topic":
                     self._tests.loc[id, "label"] = "off_topic"
-                else:
-                    self._tests.loc[id, "label"] = "pass" if self.topic_labeling_model(test.topic)(test.input, test.output) < 0.5 else "fail"
-                self._tests.loc[id, "labeler"] = "imputed"
-
-    # def predict_labels(self, topical_io_pairs):
-    #     """ Return the label probabilities for a set of input-output pairs. [NOT USED RIGHT NOW]
-
-    #     Parameters
-    #     ----------
-    #     io_pairs : list[(str, str)]
-    #         A list of input-output pairs to score.
-
-    #     Returns
-    #     -------
-    #     list[float]
-    #         A list of label probabilities.
-    #     """
-
-    #     out = np.zeros(len(topical_io_pairs))
-
-    #     to_embed = []
-    #     topics = {}
-    #     for i,(topic,input,output) in enumerate(topical_io_pairs):
-    #         if topic not in topics:
-    #             topics[topic] = []
-    #         to_embed.append(input)
-    #         to_embed.append(output)
-    #         topics[topic].append((i, len(to_embed) - 2, len(to_embed) - 1))
-    #     embeddings = adatest.embed(to_embed)
-    #     features = [None for i in range(len(topical_io_pairs))]
-    #     for topic in topics:
-    #         features = []
-    #         for i,ind1,ind2 in topics[topic]:
-    #             features.append(np.hstack([embeddings[ind1], embeddings[ind2]]))
-    #         features = np.vstack(features)
-
-    #         label = np.array([v == "pass" for v in self.topic_model(topic)(features)], dtype=np.float32)
-    #         for i, (j,_,_) in enumerate(topics[topic]):
-    #             out[j] = label[i]
-
-    #     return np.array(out)
+                    self._tests.loc[id, "label_confidence"] = membership_conf
+                    continue
+                # compute label
+                label_pred, label_conf = self.topic_labeling_model(test.topic)(test.input, test.output, return_confidence=True)
+                self._tests.loc[id, "label"] = label_pred
+                self._tests.loc[id, "label_confidence"] = label_conf
+            
+            else:
+                self._tests.loc[id, "label"] = "Unknown"
+                self._tests.loc[id, "label_confidence"] = 0
 
     def topic_labeling_model(self, topic):
         topic = topic.replace("/__suggestions__", "") # predict suggestions using their parent topic label model
@@ -489,10 +512,51 @@ class TestTree():
 
     def retrain_topic_membership_model(self, topic):
         self._topic_membership_models[topic] = self.membership_model(topic, self)
+    
+    def get_scores(self, score_column):
+        """
+        Returns an array containing scores \in [0, 1] calculated from the given score_column and the test's label.
+        The array contains one value for each row in the tree.
 
-    def drop_topic(self, topic):
-        """ Remove a topic from the test tree. """
-        self._tests = self._tests.loc[self._tests["topic"] != topic]
+        Assumes that topic markers are ensured.
+        
+        TESTS
+        - The test score is np.nan if it is labeled off_topic.
+        - The test score is (1 - normalized_to_01(score_column))/2 if it is labeled as pass, s.t. range is [0.01, 0.5]
+        - The test score is (1 + normalized_to_01(score_column))/2 if it is labeled as fail, s.t. range is [0.5, 1]
+        We want to avoid returning 0 because in _prompt_builder.py, 0 is used to mark a row as not sample-able. 
+
+        TOPICS
+        After tests are scored, topThics are always scored as the average of their direct test scores.
+        """
+        values = self._tests[score_column].copy()
+        
+        # first, compute test scores
+        mask = (self._tests["label"] != "topic_marker")
+        values.loc[mask] = pd.to_numeric(values.loc[mask], errors="raise")
+
+        # normalize to [0,1]. may occur with detection.
+        if values.loc[mask].min() < 0 or values.loc[mask].max() > 1: 
+            values.loc[mask] = (
+                np.exp(values.loc[mask].to_numpy(dtype='float')) / np.exp(values.loc[mask].to_numpy(dtype='float')).sum()
+        )
+
+        # adjust based on label
+        for id in self._tests.index[mask]:
+            label = self._tests.loc[id, "label"]
+            if  label == "off_topic": values.loc[id] = np.nan
+            elif label == "pass": values.loc[id] = max((1 - values.loc[id])/2, 0.01)
+            elif label == "fail": values.loc[id] = (1 + values.loc[id])/2
+        
+        # next, compute topic scores
+        # if a topic has no tests, topic_scores will contain NaN
+        # in the edge case of the test tree containing no topics besides /, topic_scores will be an empty df, so we set the scores to nan
+        topic_scores = self._tests.loc[~mask].apply(
+            lambda row: values.loc[self.get_children_in_topic(row["topic"], include_topics=False, direct_children_only=True).index].mean(),
+            axis=1
+        ) # may contain nans if no children
+        values.loc[~mask] = topic_scores if not topic_scores.empty else np.nan
+        return values.to_numpy()
 
 class TestTreeLocIndexer():
     def __init__(self, test_tree):
@@ -502,14 +566,15 @@ class TestTreeLocIndexer():
         return "TestTreeLocIndexer is an intermediate object for operating on TestTrees. Slice this object further to yield useful results."
 
     def __getitem__(self, key):
-        # If all columns haven't changed, it's still a valid test tree
-        # If columns have been dropped, return a Pandas object
-        
         subset = self.test_tree._tests.loc[key]
+        
+        # If all columns haven't changed, it's still a valid test tree
         if hasattr(subset, 'columns') and len(set(["topic", "input", "output", "label"]) - set(subset.columns)) == 0:
             test_tree_slice = TestTree(subset, index=subset.index, ensure_topic_markers=False)
             test_tree_slice._tests_location = self.test_tree._tests_location
             return test_tree_slice
+
+        # If columns have been dropped (e.g., key is a tuple selecting both an id and a column), return a Pandas object
         else:
             return subset
     
@@ -537,93 +602,3 @@ class TestTreeILocIndexer():
     
     def __setitem__(self, key, value):
         self.test_tree._tests.iloc[key] = value
-
-def _test_tree_from_dataset(X, y, model=None, time_budget=60, min_samples=100):
-    column_names = ['topic', 'type' , 'value1', 'value2', 'value3', 'author', 'description', \
-        'model value1 outputs', 'model value2 outputs', 'model value3 outputs', 'model score']
-
-    test_frame = pd.DataFrame(columns=column_names)
-
-    if model is None: # All we can do without a model defined at this stage.
-        test_frame['value1'] = X
-        test_frame['type'] = "{} should output {}"
-        test_frame['value2'] = y
-
-        # Constants
-        test_frame['topic'] = ''
-        test_frame['author'] = "dataset"
-        test_frame['description'] = ''
-
-        return TestTree(test_frame)
-    
-    if not isinstance(model, Model):
-        model = Model(model)
-
-    # Validate output types
-    output_names = model.output_names   
-    unknown_labels = set(y) - set(output_names)
-    assert len(unknown_labels) == 0, f"Unknown labels found: {unknown_labels}. \
-    Please update the label vector or output names property."
-
-    # Time how long inference takes on a single sample
-    try:
-        start = time.time()
-        _ = model(X[0:1])
-        end = time.time()
-    except Exception as e: # TODO: Improve this message
-        raise ValueError(f"Training data cannot be evaluated by model. Error recieved: {e}.")
-
-    # Ensure min_samples <= n_samples <= len(data) and computes in {time_budget} seconds
-    n_samples = int(min(max(time_budget // (end - start), min_samples), len(X)))
-
-    if n_samples < len(X):
-        print(f"Only using {n_samples} samples to meet time budget of {time_budget} seconds.")
-        # TODO: unify input types
-        sample_indices = np.random.choice(np.arange(len(X)), n_samples, replace=False)
-        X = [X[sample] for sample in sample_indices]
-        y = [y[sample] for sample in sample_indices]
-
-    # Build intermediate convenience frame
-    df = pd.DataFrame(columns=['sample', 'label', 'label_proba', \
-                                        'pred', 'pred_proba', 'largest_error', 'largest_error_proba'])
-    df['sample'] = X
-    df['label'] = y
-
-    # model's current prediction
-    raw_model_output = model(X)
-    pred_indices = np.argsort(raw_model_output, axis=1)
-    
-    df['pred_proba'] = raw_model_output[range(len(pred_indices)), pred_indices[:, -1]]
-    df['pred'] = [output_names[i] for i in pred_indices[:, -1]]
-
-    label_lookup = {output:index for index, output in enumerate(output_names)}
-    label_indices = [label_lookup[label] for label in y]
-    df['label_proba'] = raw_model_output[range(len(label_indices)), label_indices]
-    
-    correct_predictions = df['pred'] == df['label']
-    mispredictions = ~correct_predictions
-    
-    # For mispredicted samples, the largest error is the current prediction.
-    df.loc[mispredictions, 'largest_error'] = df.loc[mispredictions, 'pred']
-    df.loc[mispredictions, 'largest_error_proba'] = df.loc[mispredictions, 'pred_proba']
-    
-    # For correct samples, we use the 2nd highest class as the largest error.
-    largest_errors = pred_indices[correct_predictions][:, -2]
-    df.loc[correct_predictions, 'largest_error'] = [output_names[i] for i in largest_errors]
-    df.loc[correct_predictions, 'largest_error_proba'] = raw_model_output[range(len(largest_errors)), largest_errors]
-
-    df.index = [uuid.uuid4().hex for _ in range(len(df))]
-
-    # If we have a scorer, we prefer to format tests as {X} should not output {largest_error}
-    test_frame['value1'] = df['sample']
-    test_frame['type'] = "{} should not output {}"
-    test_frame['value2'] = df['largest_error']
-
-    # Constants
-    test_frame['topic'] = ''
-    test_frame['author'] = "dataset"
-    test_frame['description'] = ''
-
-    test_frame.index = df.index
-    
-    return TestTree(test_frame, index=test_frame.index)

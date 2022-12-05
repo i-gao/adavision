@@ -1,44 +1,26 @@
-import sklearn
 import numpy as np
-from sklearn import multioutput
-from sklearn import preprocessing
-from sklearn.linear_model import RidgeClassifierCV
-from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
 import adatest
-import re
 
 class ConstantModel():
-    def __init__(self, probability):
-        self.probability = probability
-    def predict_prob(self, embeddings):
-        if not hasattr(embeddings[0], "__len__"):
-            return self.probability
-        else:
-            return [self.probability] * len(embeddings)
-
-class CVModel():
-    def __init__(self, embeddings, labels):
-        self.inner_model = RidgeClassifierCV(class_weight={"pass": 1, "fail": 1})
-        self.inner_model.fit(embeddings, labels)
-
-    def predict_prob(self, embeddings):
-        assert len(self.inner_model.classes_) == 2
-        d = self.inner_model.decision_function(embeddings)
-        probs = np.exp(d) / (np.exp(d) + np.exp(-d))
-
-        return probs
-
-class OutputNearestNeighborLabelModel():
-    def __init__(self, embeddings, labels):
-        embeddings[:,:embeddings.shape[1]//2] = 0 # zero out the embedding for the input value so we only depend on the output
-        self.model = sklearn.neighbors.KNeighborsClassifier(1)
-        self.model.fit(embeddings, labels)
+    def __init__(self, label):
+        self.label = label
+        self.classes_ = np.array([label])
     def predict(self, embeddings):
-        embeddings[:,:embeddings.shape[1]//2] = 0
-        return self.model.predict(embeddings)
+        if not hasattr(embeddings[0], "__len__"):
+            return self.label   
+        else:
+            return [self.label] * len(embeddings)
+    def decision_function(self, embeddings):
+        if not hasattr(embeddings[0], "__len__"):
+            return 0
+        else:
+            return np.zeros(len(embeddings))
 
 class TopicLabelingModel:
+    """
+    A model that predicts if a given test (within a topic) is a "passed" or "failed" test.
+    """
     def __init__(self, topic, test_tree):
         self.topic = topic
         self.test_tree = test_tree
@@ -70,11 +52,11 @@ class TopicLabelingModel:
 
         # empty test tree
         if len(labels) == 0:
-            self.model = ConstantModel(0.0)
+            self.model = ConstantModel("Unknown")
 
         # constant label topic
         elif len(set(labels)) == 1:
-            self.model = ConstantModel(0.0 if labels[0] == "pass" else 1.0)
+            self.model = ConstantModel(labels[0])
         
         # enough samples to fit a model
         else:
@@ -85,32 +67,26 @@ class TopicLabelingModel:
             # ensembling several SVCs together each trained on a different bootstrap sample? This might add the roubustness (against label mismatches)
             # that is lacking with hard-margin SVC fitting (it is also motivated a bit by the connections between SGD and hard-margin SVC fitting, and that
             # in practice SGD works on subsamples of the data so it should be less sensitive to label misspecification).
-            # self.model = LinearSVC()
-
+            self.model = LinearSVC()
             # self.model = LogisticRegression(penalty='l2', random_state=0, C=1.0, solver='lbfgs', max_iter=1000)
+            self.model.fit(embeddings, labels)
 
-            # This seemed to be reasonably well calibrated on simple tests, so we use it instead of SVC
-            self.model = CVModel(embeddings, labels)
+    def __call__(self, input, output, return_confidence=False):
+        """Returns a prediction (string) and confidence score (positive float)"""
+        input_is_singleton = type(input) != list
+        if type(input) != list: input = [input]
+        if type(output) != list: output = [output]
+        
+        embeddings = [np.hstack(tup) for tup in zip(adatest.embed(input), adatest.embed(output))]
+        confidences = self.model.decision_function(embeddings)
+        labels = self.model.classes_[(confidences > 0).astype(int)]
 
-            # # add the missing predict_proba method to the base model
-            # def predict_proba(self, X):
-            #     if len(self.classes_) == 1:
-            #         return np.ones((len(X), 1))
-            #     d = self.decision_function(X)
-            #     if len(self.classes_) == 2:
-            #         probs = np.exp(d) / (np.exp(d) + np.exp(-d))
-            #         return np.array([1 - probs, probs]).T
-            #     probs = np.exp(d).T / np.sum(np.exp(d), axis=1)
-            #     return probs.T
-            # self.model.predict_proba = predict_proba.__get__(self.model, self.model.__class__)
-            
-            # self.model.fit(embeddings, labels)
-
-    def __call__(self, input, output):
-        embeddings = np.hstack(adatest.embed([input, output]))
-        if not hasattr(embeddings[0], "__len__"):
-            return self.model.predict_prob([embeddings])[0]
-        return self.model.predict_prob(embeddings)
+        if input_is_singleton: 
+            confidences = confidences[0]
+            labels = labels[0]
+        
+        if return_confidence: return labels, np.abs(confidences)
+        else: return labels
 
 class TopicMembershipModel:
     """ A model that predicts if a given test fits in a given topic.
@@ -145,110 +121,33 @@ class TopicMembershipModel:
         labels = [l if l == "off_topic" else "on_topic" for l in test_tree["label"][topic_mask]]
         embeddings = np.array(adatest.embed(strings))
 
-        # empty test tree (default to on-topic)
+        # empty test tree
         if len(labels) == 0:
-            self.model = ConstantModel(1.0)
+            self.model = ConstantModel("Unknown")
 
         # constant label topic
         elif len(set(labels)) == 1:
-            self.model = ConstantModel(0.0 if labels[0] == "off_topic" else 1.0)
+            self.model = ConstantModel(labels[0])
         
         # enough samples to fit a model
         else:
             
             # we are in a highly overparametrized situation, so we use a linear SVC to get "max-margin" based generalization
-            self.model = CVModel()
+            self.model = LinearSVC()
             self.model.fit(embeddings, labels)
 
-    def __call__(self, input):
-        embeddings = adatest.embed([input])[0]
-        if not hasattr(embeddings[0], "__len__"):
-            return "on_topic" if self.model.predict_prob([embeddings])[0] > 0.5 else "off_topic"
-        return ["on_topic" if v > 0.5 else "off_topic" for v in self.model.predict_prob(embeddings)]
+    def __call__(self, input, return_confidence=False):
+        """Returns a prediction (string) and confidence score (float)"""
+        input_is_singleton = type(input) != list
+        if type(input) != list: input = [input]
 
-class ChainTopicModel:
-    def __init__(self, model=None):
-        if model is None:
-            self.base_model = RidgeClassifierCV()
-        else:
-            self.base_model = model
-    def fit(self, X, y):
-        topics = y
-        max_levels = max([len(x.split('>')) for x in topics])
-        self.model = sklearn.multioutput.ClassifierChain(self.base_model, order=list(range(max_levels)))
-        y = [list(map(str.strip, x.split('>'))) for x in topics]
-        y = np.array([x + ['-'] * (max_levels - len(x)) for x in y])
-        self.encoders = [preprocessing.LabelEncoder() for _ in range(max_levels)]
-        self.possible_topics = set()
-        for x in topics:
-            self.possible_topics.add(x)
-            a = x.split(' > ')
-            for i in range(1, len(a)):
-                self.possible_topics.add(' > '.join(a[:i]))
+        embeddings = adatest.embed(input)
+        confidences = self.model.decision_function(embeddings)
+        labels = self.model.classes_[(confidences > 0).astype(int)]
 
-        self.classes_ = list(self.possible_topics)
-        new_y = np.zeros(y.shape)
-        for i in range(y.shape[1]):
-            self.encoders[i].fit(y[:, i])
-            new_y[:, i] = self.encoders[i].transform(y[:, i])
-        self.model.fit(X, new_y)
-    def predict(self, X):
-        y = self.model.predict(X)
-        ret = []
-        for i in range(y.shape[1]):
-            ret.append(self.encoders[i].inverse_transform(y[:, i].astype(int)))
-        y = np.array(ret).T
-        ret = []
-        for x in y:
-            x = [z for z in x if z != '-']
-            a = ' > '.join(x)
-            while a not in self.possible_topics:
-                x = x[:-1]
-                a = ' > '.join(x)
-            ret.append(a)
-        return np.array(ret)
-
-    def predict_proba(self, X):
-        # This is just a fake function for now, puts 1 in the predicted class and 0 elsewhere
-        y = self.predict(X)
-        ret = np.zeros((len(X), len(self.classes_)))
-        for i, r in enumerate(y):
-            ret[i, self.classes_.index(r)] = 1
-        return ret
-
-class StandardTopicModel:
-    def __init__(self, threshold=0.5):
-        self.model= sklearn.linear_model.RidgeClassifierCV()
-        self.threshold=threshold
-        # add the missing predict_proba method to RidgeClassifierCV
-        def predict_proba(self, X):
-            if len(self.classes_) == 1:
-                return np.ones((len(X), 1))
-            d = self.decision_function(X)
-            if len(self.classes_) == 2:
-                probs = np.exp(d) / (np.exp(d) + np.exp(-d))
-                return np.array([1 - probs, probs]).T
-            probs = np.exp(d).T / np.sum(np.exp(d), axis=1)
-            return probs.T
-        self.model.predict_proba = predict_proba.__get__(self.model, self.model.__class__)
-    def fit(self, X, y):
-        self.model.fit(X, y)
-    def predict_proba(self, X):
-        return self.model.predict_proba(X)
-    def predict(self, X):
-        if self.threshold is None:
-            return self.model.predict(X)
-        pps = self.model.predict_proba(X)
-        zero_index = list(self.model.classes_).index('Not problematic')
-        ret = []
-        for p in pps:
-            if p[zero_index] >= self.threshold:
-                ret.append(self.model.classes_[zero_index])
-                continue
-            else:
-                best = np.argsort(p)
-                if best[-1] == zero_index:
-                    best = best[:-1]
-                ret.append(self.model.classes_[best[-1]])
-        return np.array(ret)
-        # return self.model.predict(X)
+        if input_is_singleton: 
+            confidences = confidences[0]
+            labels = labels[0]
+        
+        if return_confidence: return labels, np.abs(confidences)
+        else: return labels
